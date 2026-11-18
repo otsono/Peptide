@@ -59,9 +59,6 @@ length and go the wrong way. what it has settled:
   `onlyAffectsAir`), is judged as it connects: one that does not fit the fighter hands the hit to
   the attack's box that does. this engine's own condition drops the hit on the first box it
   rejects, so sandbag's down air (a box for each) hit no one.
-- an attacker held by its hit freeze is slowed through it as the source slows it (the animation's
-  own slowdown, else the fighter's), taken off as it comes out: sandbag's forward tilt slides 3
-  pixels after its hit where it slid 12.
 - an attack in the air fast-falls on a press down once it is no longer rising, unless it states
   `allowFastFall` false, as the source's do (sandbag's air down special drops at his fast-fall
   speed until its own code holds him; it starts a source frame later here, the engine moving him
@@ -117,12 +114,12 @@ pay the same share of the source's damage and launch at the scale a speed conver
 standing victim goes up at the mirrored angle in the source; this engine mirrors only a strong one itself
 (its `rawAngle` keeps the stated angle) and slides a standing victim along the floor under a weak one, so the
 fighter's script turns that launch up (`runtime/native/fighter_rules.hx`): lucario's jab, stated at 291 degrees,
-and fox's and bandanadee's downward airs now leave at the source's angle with its launch. a box the code rewrites as it runs into a fixed hit (`weightKB`) launches by the rule a declared
-one converts by (ryu's down tilt, kirby's down air). `hit_parity.py` compares the angle a hit sends at as well (within 8 degrees). a projectile's hit follows the projectile's facing, as the source's does (its boxes were reversible because the projectile could be reflected, and a fast shot past the victim's middle sent it back: chibirobo's, krystal's, samus's, sora's, falco's, ichigo's and megaman's shots now match). a box's stated true or false reaches the conversion (goku's forward tilt states its boxes not reversible), and what a box states true or false that this engine has a field for reaches it (`flags` in hitbox_stats.jsonc): a knockback that does not stack (1142 boxes, most of them a multi-hit move's), a forced tumble (`tumbleType`), no DI, through shields, and a hit for grounded or airborne foes only (`physicsHitConditions`). a clip the fighter's timeline places mirrored draws mirrored, boxes and all (marth's back air), and an attack that says it `flip`s turns its fighter around as it begins; a box's `bypassGrabbed` (it passes over the fighter held) and `bypassNonGrabbed` (it hits that fighter alone) are honoured as the hit connects, the way the engine's own docs say to filter a hit (`HITBOX_CONNECTED`, `disabled`): a throw's box for bystanders no longer lands on the one held first (bowser's, falco's and dedede's four throws match the source's). an attack hits each fighter once until it is refreshed, whichever of its boxes reaches it (the engine's own hit record: a piece of an attack played on in its head's state keeps the head's, `resetId: false`, so `special_side` then `special_side_attack` is one attack, and a projectile keeps one for its life), and its `refreshRate` refreshes it while it lasts (bowser's up throw hits six times here where it hit once; seven on the source, whose last hit is its launch). `hit_parity.py` counts every hit a move lands on each engine and reports a move whose count differs. a throw keeps hold of its fighter through its small hits, as the source's does: a box with no effect (`hasEffect: false`) is a hit that does not flinch (`flinch: false`), which this engine deals without letting go, and it launches no one held, as the source's does not; the throw's code gives a box its effect for the hit that throws (bowser's up throw hits on frames 0, 1, 3, 5, 7, 9 and launches on 10 on both; pikachu's forward throw shocks on 0, 4, 10 and 15 on both). zelda's, bandanadee's, samus's and ness's four throws match the source's too. each projectile a move fires keeps its own hits (sora's blizzard lands each of its eight, every two frames, on the source and here), and bowser's fire breath lands one flame of its stream on both. a projectile hits again at the `refreshRate` its declaration states, what its code writes to its boxes holds through every animation it plays and every refresh, a projectile reads its own declaration for its attack's stats, and a hit it lands in the frame that made it is told to its code once that code has started: ness's pk fire turns into its pillar and burns about every five frames for one, as in the source (one pillar hit more or less than the source's, which itself lands seven or eight), and black mage's meteor adds its charge to its own damage. open from `hit_parity.py`'s specials: naruto's rasengan projectile (refresh 3, two 0.75 boxes) lands three of its eight hits here and not its last 10.5, and the move lands at random on both engines when tapped; pichu's down special lands a 2-damage bolt before its 17 here where the source lands the 17 alone; mario's forward air drifts about twice as far here in `hit_parity.py`'s drop, which sends its presses with the watch's samples and so holds a one-frame tap for a round trip (pressed a frame apiece the drift matches, but the hops and aerials the sweep was matched with go off: 47 roster aerials differed against 36); lloyd's side special lands all six of its hits and its finisher, as in the source; sora's blizzard projectiles deal 1 where the source deals 0.5 after its first (the freeze they state is not it); goku's down special, a box stated at -3 striking a standing fighter, leaves at 75 on the source (the downward-hit gap above). an attack hits a fighter at most once a source frame, refreshed or not: this engine runs two frames to each of the source's, and a refresh in the first let the second land again (mario's down air hit twice in one source frame; goku's neutral special, refreshed every frame, lands on consecutive source frames on both). on the multi-hit moves `hit_parity.py` flagged, 34 differences come to 15. still apart: peach's down air keeps its fighter in reach for its later refreshes here, where the source's sends it out of reach after the first. isaac's up special fires its scoop at his place plus (his x speed, his y speed + 30): standing, that is 30 below the floor, where this engine puts it; the source's appears at the floor, level with him, and both then fall the same path (whether the source keeps a spawn out of the floor is not measured on a second move yet). two standing fighters are pushed apart by each engine's own amount (`hit_parity.py` reads the spacing on both): fox and megaman settle 30 to 36 apart here from 10 to 30, 34 to 43 in the source, and both leave them be from 40 on; two simons put 40 or more apart keep sliding apart here (69.5 from 56) with no speed of their own, where the source leaves them at 56. what drives this engine's push on simon is not found yet (his body width and standing boxes are fox's size). naruto's down throw matches hit for hit and damage for damage; its first hit (1, no launch, on the held fighter) reads a launch on both engines from the throw's own motion, and the two readings differ. samus's up air, dropped onto a fighter 34 source pixels away, lands its weak multi-hit (1) on frame 9 and its finisher on 11 in the source; here its frame 9 box falls just short of the fighter's edge and the finisher (5) is its only hit, whether hit_parity's drop starts the fall at the source's speed or (as it does, which the roster's aerials land with) half a step slower. samus's homing missile lives 171 frames here and 59 on the source: once it slows to 2 its code sends it to its explosion (clip frame 65) and from its last frame (70) back to `loop`, which here loops on, where the source's is gone as that last frame plays (what removes it there is not measured yet). a move with two boxes that both reach the fighter lands the stronger in the source (bomberman's back air 10 of 10 and 8, ganondorf's 18 of 17 and 18, ryu's 16 of 16 and 13) and whichever touches first here, half a source frame sooner: open, since the engine tells a hit one box at a time. a box that poisons (`poison` damage every `poisonInterval` frames for `poisonLength`) does here what it does on the source, one poison on a fighter at a time: black mage's down throw ends at 20 damage on both, at the same time. an attack's `hit_ease` moves nothing: on the source link's forward air (2) and pikachu's (-3) fall on through their hit and land into their landing, where holding or popping the fall kept them up for a second hit (link's forward air, sora's aerials and captain falcon's neutral air land once, as in the source; pikachu's forward air still lands a second, its first landing a frame higher here). a projectile's box turns for a fighter behind it as it states, judged from where the shot was before its frame's move (zelda's din's fire sends a fighter behind its blast back, as the source does, and the fast shots still send theirs the way they fly). a box that turns its launch for a fighter behind the attacker judges where the attacker stood before the frame's move, as the source checks its hits first (fox's illusion dashes through the fighter and sends it the way it was going, as in the source). a box that freezes the one it hits (`freeze`) freezes it here too, for this engine's length, and a projectile's box carries the same stated flags a fighter's does. an animation cut from a move (a charged move's attack, `special_side_attack`) carries the boxes the sprite parser kept under its own name and the stats of the move it was cut from: pikachu's skull bash hits as in the source, where before it flew through the fighter with no box (fifteen fighters had such a cut). a box that states `reverse_character` turns the fighter it hits around and its launch with it (mario's cape sends the fighter away at 0, as in the source). a package holding several characters (bowser and giga bowser) keeps a projectile as the character that declares it wrote it: a later one that declares nothing of it no longer rewrites it with placeholder stats. a projectile's box with no effect does not hit the fighter its owner holds (fox's down throw fires its lasers into it; only the throw's box hits it in the source), and one with an effect does (falco's lasers hit his before the throw's box, and his four throws match the source's), and one fired in a throw drawn already turned goes the way the thrower is about to face: falco's and fox's throws match, fox's back throw too: a box with no effect (`hasEffect` false) deals its damage without making the one it hits flinch, so the back throw's first laser leaves the flying fighter's flight as it was and the next two pass behind it, as in the source (fox's laser leaves a standing fighter standing; mario's cape, which states it too, still launches). `hit_parity.py` keeps each hit's frame and damage on both engines (`each` in its report). this engine turns no one mid-throw, so a throw that flips is drawn and launched already turned (its frames mirrored, its launch the other way) and the thrower turns once it is over (the back throws of fox, falco, bowser and nine others: fox's lands its victim at -162 here, -154 in the source). a clip the timeline places mirrored is also how forty other animations across the roster are drawn (most forward rolls and tech rolls, getup attacks, kirby's back air). `hit_parity.py` lands the four throws from a hold, and starts an aerial from rest 80 source pixels above the floor on both engines before it tries a hop (each engine reaches a hop's aerial at its own point of the jump). still apart there: goku's forward tilt, whose two boxes sit side by side on the same frames, so a victim in both takes the 120-degree one in some source runs and the 60-degree one in others (box 0 every run here), and sonic's up tilt (an autolink, below). `hit_parity.py` stands the victim still on the floor at 0% on both engines before
+and fox's and bandanadee's downward airs leave at the source's angle with its launch. a box the code rewrites as it runs into a fixed hit (`weightKB`) launches by the rule a declared
+one converts by (ryu's down tilt, kirby's down air). `hit_parity.py` compares the angle a hit sends at as well (within 8 degrees). a projectile's hit follows the projectile's facing, as the source's does, even when its boxes are reversible because it can be reflected (chibirobo's, krystal's, samus's, sora's, falco's, ichigo's and megaman's shots match). a box's stated true or false reaches the conversion (goku's forward tilt states its boxes not reversible), and what a box states true or false that this engine has a field for reaches it (`flags` in hitbox_stats.jsonc): a knockback that does not stack (1142 boxes, most of them a multi-hit move's), a forced tumble (`tumbleType`), no DI, through shields, and a hit for grounded or airborne foes only (`physicsHitConditions`). a clip the fighter's timeline places mirrored draws mirrored, boxes and all (marth's back air), and an attack that says it `flip`s turns its fighter around as it begins; a box's `bypassGrabbed` (it passes over the fighter held) and `bypassNonGrabbed` (it hits that fighter alone) are honoured as the hit connects, the way the engine's own docs say to filter a hit (`HITBOX_CONNECTED`, `disabled`): a throw's box for bystanders no longer lands on the one held first (bowser's, falco's and dedede's four throws match the source's). an attack hits each fighter once until it is refreshed, whichever of its boxes reaches it (the engine's own hit record: a piece of an attack played on in its head's state keeps the head's, `resetId: false`, so `special_side` then `special_side_attack` is one attack, and a projectile keeps one for its life), and its `refreshRate` refreshes it while it lasts (bowser's up throw hits six times here where it hit once; seven on the source, whose last hit is its launch). `hit_parity.py` counts every hit a move lands on each engine and reports a move whose count differs. a throw keeps hold of its fighter through its small hits, as the source's does: a box with no effect (`hasEffect: false`) is a hit that does not flinch (`flinch: false`), which this engine deals without letting go, and it launches no one held, as the source's does not; the throw's code gives a box its effect for the hit that throws (bowser's up throw hits on frames 0, 1, 3, 5, 7, 9 and launches on 10 on both; pikachu's forward throw shocks on 0, 4, 10 and 15 on both). zelda's, bandanadee's, samus's and ness's four throws match the source's too. each projectile a move fires keeps its own hits (sora's blizzard lands each of its eight, every two frames, on the source and here), and bowser's fire breath lands one flame of its stream on both. a projectile hits again at the `refreshRate` its declaration states, what its code writes to its boxes holds through every animation it plays and every refresh, a projectile reads its own declaration for its attack's stats, and a hit it lands in the frame that made it is told to its code once that code has started: ness's pk fire turns into its pillar and burns about every five frames for one, as in the source (one pillar hit more or less than the source's, which itself lands seven or eight), and black mage's meteor adds its charge to its own damage. open from `hit_parity.py`'s specials: naruto's rasengan projectile (refresh 3, two 0.75 boxes) lands three of its eight hits here and not its last 10.5, and the move lands at random on both engines when tapped; pichu's down special lands a 2-damage bolt before its 17 here where the source lands the 17 alone; mario's forward air drifts about twice as far here in `hit_parity.py`'s drop, which sends its presses with the watch's samples and so holds a one-frame tap for a round trip (pressed a frame apiece the drift matches, but the hops and aerials the sweep was matched with go off: 47 roster aerials differed against 36); lloyd's side special lands all six of its hits and its finisher, as in the source; sora's blizzard projectiles deal 1 where the source deals 0.5 after its first (the freeze they state is not it); goku's down special, a box stated at -3 striking a standing fighter, leaves at 75 on the source (the downward-hit gap above). an attack hits a fighter at most once a source frame, refreshed or not: this engine runs two frames to each of the source's, and a refresh in the first let the second land again (mario's down air hit twice in one source frame; goku's neutral special, refreshed every frame, lands on consecutive source frames on both). on the multi-hit moves `hit_parity.py` flagged, 34 differences come to 15. still apart: peach's down air keeps its fighter in reach for its later refreshes here, where the source's sends it out of reach after the first. isaac's up special fires its scoop at his place plus (his x speed, his y speed + 30): standing, that is 30 below the floor, where this engine puts it; the source's appears at the floor, level with him, and both then fall the same path (whether the source keeps a spawn out of the floor is not measured on a second move yet). two standing fighters are pushed apart by each engine's own amount (`hit_parity.py` reads the spacing on both): fox and megaman settle 30 to 36 apart here from 10 to 30, 34 to 43 in the source, and both leave them be from 40 on; two simons put 40 or more apart keep sliding apart here (69.5 from 56) with no speed of their own, where the source leaves them at 56. what drives this engine's push on simon is not found yet (his body width and standing boxes are fox's size). naruto's down throw matches hit for hit and damage for damage; its first hit (1, no launch, on the held fighter) reads a launch on both engines from the throw's own motion, and the two readings differ. samus's up air, dropped onto a fighter 34 source pixels away, lands its weak multi-hit (1) on frame 9 and its finisher on 11 in the source; here its frame 9 box falls just short of the fighter's edge and the finisher (5) is its only hit, whether hit_parity's drop starts the fall at the source's speed or (as it does, which the roster's aerials land with) half a step slower. samus's homing missile lives 171 frames here and 59 on the source: once it slows to 2 its code sends it to its explosion (clip frame 65) and from its last frame (70) back to `loop`, which here loops on, where the source's is gone as that last frame plays (what removes it there is not measured yet). a move with two boxes that both reach the fighter lands the stronger in the source (bomberman's back air 10 of 10 and 8, ganondorf's 18 of 17 and 18, ryu's 16 of 16 and 13) and whichever touches first here, half a source frame sooner: open, since the engine tells a hit one box at a time. a box that poisons (`poison` damage every `poisonInterval` frames for `poisonLength`) does here what it does on the source, one poison on a fighter at a time: black mage's down throw ends at 20 damage on both, at the same time. an attack's `hit_ease` moves nothing: on the source link's forward air (2) and pikachu's (-3) fall on through their hit and land into their landing, where holding or popping the fall kept them up for a second hit (link's forward air, sora's aerials and captain falcon's neutral air land once, as in the source; pikachu's forward air still lands a second, its first landing a frame higher here). a projectile's box turns for a fighter behind it as it states, judged from where the shot was before its frame's move (zelda's din's fire sends a fighter behind its blast back, as the source does, and the fast shots still send theirs the way they fly). a box that turns its launch for a fighter behind the attacker judges where the attacker stood before the frame's move, as the source checks its hits first (fox's illusion dashes through the fighter and sends it the way it was going, as in the source). a box that freezes the one it hits (`freeze`) freezes it here too, for this engine's length, and a projectile's box carries the same stated flags a fighter's does. an animation cut from a move (a charged move's attack, `special_side_attack`) carries the boxes the sprite parser kept under its own name and the stats of the move it was cut from: pikachu's skull bash hits as in the source, where before it flew through the fighter with no box (fifteen fighters had such a cut). a box that states `reverse_character` turns the fighter it hits around and its launch with it (mario's cape sends the fighter away at 0, as in the source). a package holding several characters (bowser and giga bowser) keeps a projectile as the character that declares it wrote it: a later one that declares nothing of it no longer rewrites it with placeholder stats. a projectile's box with no effect does not hit the fighter its owner holds (fox's down throw fires its lasers into it; only the throw's box hits it in the source), and one with an effect does (falco's lasers hit his before the throw's box, and his four throws match the source's), and one fired in a throw drawn already turned goes the way the thrower is about to face: falco's and fox's throws match, fox's back throw too: a box with no effect (`hasEffect` false) deals its damage without making the one it hits flinch, so the back throw's first laser leaves the flying fighter's flight as it was and the next two pass behind it, as in the source (fox's laser leaves a standing fighter standing; mario's cape, which states it too, still launches). `hit_parity.py` keeps each hit's frame and damage on both engines (`each` in its report). this engine turns no one mid-throw, so a throw that flips is drawn and launched already turned (its frames mirrored, its launch the other way) and the thrower turns once it is over (the back throws of fox, falco, bowser and nine others: fox's lands its victim at -162 here, -154 in the source). a clip the timeline places mirrored is also how forty other animations across the roster are drawn (most forward rolls and tech rolls, getup attacks, kirby's back air). `hit_parity.py` lands the four throws from a hold, and starts an aerial from rest 80 source pixels above the floor on both engines before it tries a hop (each engine reaches a hop's aerial at its own point of the jump). still apart there: goku's forward tilt, whose two boxes sit side by side on the same frames, so a victim in both takes the 120-degree one in some source runs and the 60-degree one in others (box 0 every run here), and sonic's up tilt (an autolink, below). `hit_parity.py` stands the victim still on the floor at 0% on both engines before
 each move. an accepted gap: a downward hit on a fighter standing on the floor launches it with a different strength than the source's (naruto's down tilt reads 0.77 of this engine's at 0%), and stays as it is. a box that states no victim freeze (`-1`, or at or below zero, as ryu's `-1.8`) holds the victim
 `floor(damage / 6 + 2.5)` source frames after the one the hit lands on, as the source works it out (`freeze_parity.py --victim`: twenty
 tilts and jabs on fox, kirby, bowser, captain falcon and ryu; this engine's own default
-held them half a frame to two frames longer), and one that states N holds it N (lloyd's side special, 1 a hit, kept its fighter moving with the attacker through six hits once it no longer froze it 2). a box that states no freeze works both freezes out from the damage it hits with, so code that rewrites its damage moves them (wario's side special, written 12 over its stated 8, holds wario 3 frames, not 2). a launch fades across at the source's rate (this engine's own fade takes 1.31 times as much an engine frame, so the fighter's script gives back the difference; simon's cross sends its fighter 65 source pixels here and 70 there, the rest being the slide after it lands, which this engine stops sooner); its rise and fall are left to this engine's fade and gravity, which keep a launched fighter up a source frame or two longer than the source. a hit holds its fighter in its hurt state for the source's length, 1.05 source frames for each source pixel a frame it launches it plus 2.5 (measured on the jabs and tilts of mario, fox, bowser, kirby, link and pikachu with `tools/tests/hitstun_parity.py`), its freeze counted in, where this engine held near 12 for any launch; a fighter standing when it runs out is standing again, as in the source, where this engine played out the rest of its hurt animation (kirby's and pikachu's jabs held their fighter 10 frames, 5 on the source). those moves now land within two frames of the source, the rest following each move's own launch difference (`fighter_rules.hx`, `ENTER_HITSTUN`). across the roster (`hit_parity.py --all`), 47 of the 658 moves both engines land differ in something, past the launches the accepted gaps account for, a reach or a random roll for most of the change from sweep to sweep (16 more land only on the source, listed under `unlanded`; 18 reaches are at the edge of this engine's reach, where the source lands the move at this engine's distance too, listed under `edges`); a move whose own code reports an error mid-watch is still measured, which lands yoshi's back throw, waluigi's neutral special and rayman's side special on both, and samus's bomb lands nothing here because two standing fighters are pushed apart past its blast before it goes off; isaac's down special (gaia) lands nothing here for the same reason: set 34 apart, the two isaacs stand 42 apart here and 36 on the source, and the pillar's widest box reaches 32 (`rehit_trace.py --proj` reads the place of both). how far this engine pushes two standing fighters apart against the source is open, and it moves every `=` spacing line `hit_parity.py` prints: `push_parity.py` sets two down at a distance and reads where they settle. this engine pushes them apart at once, the source a few pixels a frame, and they settle at different gaps for some fighters (simon 66 here and 56 there, isaac 41 and 50; mario, peach, falco and samus within 3). neither engine's gap follows the declared hip width. the source's comes near the width its stand animation's hurt boxes cover over all its frames (simon 56 and 56, mario 37 and 37, falco 45 and 47, isaac 50 and 54, samus 33 and 37); this engine pushes by the collision body the conversion makes of each frame's hurt boxes (`Body`: their span as its hip width, centred on them by `hipXOffset`): with every frame's body set to a centred W, two isaacs settle exactly W apart (10, 20 and 40 measured), and with no room between them they are not pushed at all. the offset is what puts this engine's gaps off the source's (two facing bodies set forward touch sooner). centring the body would bring the sample's gaps from 4.0 px off the source's on average to about 2.8 (simon 66 to 55 against 56, but samus and mario 3 to 4 further off), and the body also meets walls, floors and ledges, so it is not changed. tried on nine fighters (bodies centred at conversion): isaac's gaia, ness's pk flash and zelda's din's fire still land nothing and krystal's jab moves a degree, so the offset is not what keeps those apart. this engine's published api has nothing that pushes or stops a push (its fighters part as soon as their bodies overlap, the source's a few pixels a frame), so the gap is the rate, not a shape: it shows only where the harness sets two fighters down inside each other, and the moves it keeps from landing (gaia, pk flash, din's fire, krystal's jab angle) are measured mid-push on the source. `hit_parity.py` now waits for two fighters it sets down to stop parting on both engines before it plays the move: on six fighters the moves that differ fell from 20 to 8 (mario's all match, isaac's gaia and zelda's din's fire land on both), as many land on one engine only (11), samus's bomb now lands nothing here, and a few aerials land nothing on the source from where the two settle. where they settle still differs for some (isaac 50 there and 41 here, krystal 48 and 37.5): the bodies' widths, not the push's rate. a body as wide as every frame's hurt boxes together, centred (the span the source's own gap follows), tried on the same six: krystal's jab and simon's side special come right, isaac's gaia and down air and samus's up air go wrong, 10 moves differing against 8 and 13 landing on one engine against 11, so the bodies stay as the hurt boxes of each frame make them; `tools/tests/roster_report.py` reads a sweep). a fighter a hit stuns is hurt by the time the hit's events are told, as in the source, where this engine turns it after them, and a stat no character states reads as the source reads it (`canReceiveKnockback`, stats.jsonc `runtime_read_defaults`): krystal's jab pulls the fighter it strikes in with its own code, and does here too. a hit that launches nothing still counts as landed in `hit_parity.py`. a hit a fighter's code deals outright (`takeDamage`) is a whole hit, its launch and freeze as well as its damage, a growth it leaves out the source's 100 and one with no effect launching nothing, and an event names a projectile its script fired as the same object it was handed when it fired it: naruto's down throw lands its three hits as in the source (its clone's hit, recognised as the clone, sends the fighter straight up for the kick). a projectile fired with stats (`fireProjectile`'s last argument) reads them over its own for its life, and one that never says it is suspended reads `suspend` false: krystal's grenade throws as far as its charge says and explodes on what it strikes, as in the source. a projectile is drawn and struck at the scale its code gives its own clip (samus's bomb sets 1.75 on itself), a stat stated just above nothing stays above it (the bomb's fuse deals 0.00000001 so its touch sets it off). a falling projectile's first move takes its frame's pull first, as the source's does, and goes on with a step and a half more to stand for this engine adding the pull after each move (waluigi's dice, thrown up at 5, peaks where the source's does and lands on its fighter, where it rose 8 pixels too high and flew over; its fall still runs about a frame ahead). a projectile keeps its speed along the floor and through the air but for the decay it states, as the source's does, and a decay slows it to a stop and holds it there rather than turning it back (sora's strike raid stops and hangs over the fighter it drags, which it hits ten times and then throws, as in the source, where it drifted back off it here and hit eight) (this engine's own friction stopped simon's holy-water flame in two frames; it now runs along the floor and burns its fighter three times, as in the source), and a dying projectile is held still by its script rather than by its death animation, which can be a label it also lives in. a projectile's x speed is read and written along the way it was thrown, as the source's is, and one its own code has not turned says it faces right whichever way it was thrown, where this engine keeps the speed along the way the projectile faces (thrown left, fox's laser went right, chibi-robo's telly vision ran off from him and link's boomerang turned home at once). thrown left, simon's cross and link's boomerang and arrow now follow the source's path frame by frame. `proj_parity.py --left` plays every move thrown left, the layout mirrored so the thrower faces the other fighter. a projectile's code that reads a fighter's place in its update sees where the fighter is about to be, as the source's does (the source moves a fighter in its own update, before its projectiles' code runs; sora's strike raid rides his hand frame for frame, where it trailed a frame of his rise). a projectile's box that states a freeze of 0 freezes nothing, as a fighter's does (ness's pk fire states its own freeze 0, and its pillar's hits fall on the source's frames). the bomb's blast lifts samus as the source's does: a rocketed fighter starts the attack the source rockets it in at that attack's `rocket` frame and rides the speed and angle it was given, `decay` less a frame, until the attack ends (the path matches the source's from its first frame; the move ends a source frame late here). the attack is entered on the animation the conversion made of its label, and what a projectile's code writes to its boxes holds for its life and on the hit itself, even on a box that has only just come out with a new animation (the bomb's blast hits for 7 played by hand). `hit_parity.py`'s held press still never sets the bomb off (open). krystal's jab sends the fighter it pulls at 101 degrees here and 111 there: its code aims from the two fighters' places, and the angles say they stood about 40 apart here and 49 there, which is the push above. zelda's din's fire (side special) flies the source's path to the pixel and grows at its rate; its burst's boxes are out here (read off the engine as it bursts, the widest for two engine frames), and their edge stops a few pixels short of the fighter, which this engine has pushed further off as zelda walks in: the push above again. the source lands it set 64 apart (its fighter is not pushed there) and the port lands nothing. an attack's `refreshRate` refreshes it as the source's does: its frames are counted only while the attacker is not frozen, a refresh comes once the attack has landed a hit, on the count's Nth frame and every N after, and another only after a frame the attacker is free and has not just refreshed; a move pressed for counts a frame ahead of its first, a throw (begun from the hold) does not (meta knight's drill, refreshed every frame, lands one hit every three frames as the freezes go, where it landed one every two and held its fighter in; lloyd's side special and bowser's up throw land on the source's frames). a box that passes over the fighter held (`bypassGrabbed`) passes over the one the attack has just thrown too (sheik's and lloyd's throws struck it again with the box meant for those standing near). the source also counts toward a refresh the frame after a hit, while the attacker is frozen, and the frozen attacker's boxes still hit; this engine runs nothing of the fighter while it is frozen, so that refresh comes as the hit lands (meta knight's drill lands its second hit the frame after its first, as there). bandana dee's neutral special (refreshed every four, the attacker frozen one) lands that second hit here and not on the source, where meta knight's drill (every frame) does; what tells the two apart there is open. jigglypuff's down air lands its hits on the source's frames (0, 1, 4, 7, 10 on both); how many more it lands as it falls to the floor follows the hop, as every aerial's count does. a fighter's code that asks how long its controls have been held (`getSmashTimer`, telling a flick from a hold) is answered as the source counts it: 0 on a frame nothing is held but while landing or skidding, one more on any other, and out of reach once an attack ends or the fighter lands, where it read as never pressed: samus's side special fires its power missile off a fresh press, as in the source (it fired the homing missile every time). naruto's rasengan (neutral special) keeps its charge between uses (`gvar p0 NarutoNSpecCharge 75` sets it full on either engine), and charged full it lands as the source's does: its hit, the rasenshuriken's ten grinding hits on the source's frames, and one burst. `hit_parity.py` plays an aerial off a short hop, and on the source it names the move after a round trip, so the source's aerial starts wherever the trip lands (lloyd's down air at the top of the hop, about frame 8) while the port's is pressed on frame 3 of the hop (`hop_trace.py`: the two hops rise within a pixel of each other). pressing both on the same frame (`HP_AIR_SEQ=1`, `HP_AIR_AT=N`) moves which aerials land more than it settles them (on eight fighters' aerials: 14 differing as played, 21 at frame 3, 16 at frame 7), so the multi-hit aerials' counts (lloyd's, wario's and jigglypuff's down airs) are read against when each was started, not taken as the port's a projectile's code is told of its touchdown with the speed it came down at, and a bounce it gives itself there holds once the engine has settled the landing; a touch as it is made, short of where it is fired to, is no landing: waluigi's dice bounces once and lands its hit as in the source (its roll differs run to run). a fall cap a projectile's code writes (`maxgravity`) reaches the engine, 0 holding it where it is (ness's pk flash bursts and hangs; it fell on here, and landed by falling onto the fighter, where the source's lands from where it hangs: the hanging burst misses here as the two nesses stand, which is the push above). a projectile fired into the floor its fighter stands on starts on that floor, as the source's does (isaac's up special fires its scoop 30 below his feet, and it sat inside the stage here). a projectile's art and boxes sit where its clip places its stance (isaac's down tilt thorns were drawn and boxed 61 px below the floor, and hit nothing; mario's fireball box sat 9 px ahead and 10 up of the source's). `tools/tests/bounce_trace.py` shows a launch frame by frame. a fast shot
+held them half a frame to two frames longer), and one that states N holds it N (lloyd's side special, 1 a hit, keeps its fighter moving with the attacker through six hits). a box that states no freeze works both freezes out from the damage it hits with, so code that rewrites its damage moves them (wario's side special, written 12 over its stated 8, holds wario 3 frames, not 2). a launch fades across at the source's rate (this engine's own fade takes 1.31 times as much an engine frame, so the fighter's script gives back the difference; simon's cross sends its fighter 65 source pixels here and 70 there, the rest being the slide after it lands, which this engine stops sooner); its rise and fall are left to this engine's fade and gravity, which keep a launched fighter up a source frame or two longer than the source. a hit holds its fighter in its hurt state for the source's length, 1.05 source frames for each source pixel a frame it launches it plus 2.5 (measured on the jabs and tilts of mario, fox, bowser, kirby, link and pikachu with `tools/tests/hitstun_parity.py`), its freeze counted in, where this engine held near 12 for any launch; a fighter standing when it runs out is standing again, as in the source, where this engine played out the rest of its hurt animation (kirby's and pikachu's jabs held their fighter 10 frames, 5 on the source). those moves now land within two frames of the source, the rest following each move's own launch difference (`fighter_rules.hx`, `ENTER_HITSTUN`). across the roster (`hit_parity.py --all`), 47 of the 658 moves both engines land differ in something, past the launches the accepted gaps account for, a reach or a random roll for most of the change from sweep to sweep (16 more land only on the source, listed under `unlanded`; 18 reaches are at the edge of this engine's reach, where the source lands the move at this engine's distance too, listed under `edges`); a move whose own code reports an error mid-watch is still measured, which lands yoshi's back throw, waluigi's neutral special and rayman's side special on both, and samus's bomb lands nothing here because two standing fighters are pushed apart past its blast before it goes off; isaac's down special (gaia) lands nothing here for the same reason: set 34 apart, the two isaacs stand 42 apart here and 36 on the source, and the pillar's widest box reaches 32 (`rehit_trace.py --proj` reads the place of both). how far this engine pushes two standing fighters apart against the source is open, and it moves every `=` spacing line `hit_parity.py` prints: `push_parity.py` sets two down at a distance and reads where they settle. this engine pushes them apart at once, the source a few pixels a frame, and they settle at different gaps for some fighters (simon 66 here and 56 there, isaac 41 and 50; mario, peach, falco and samus within 3). neither engine's gap follows the declared hip width. the source's comes near the width its stand animation's hurt boxes cover over all its frames (simon 56 and 56, mario 37 and 37, falco 45 and 47, isaac 50 and 54, samus 33 and 37); this engine pushes by the collision body the conversion makes of each frame's hurt boxes (`Body`: their span as its hip width, centred on them by `hipXOffset`): with every frame's body set to a centred W, two isaacs settle exactly W apart (10, 20 and 40 measured), and with no room between them they are not pushed at all. the offset is what puts this engine's gaps off the source's (two facing bodies set forward touch sooner). centring the body would bring the sample's gaps from 4.0 px off the source's on average to about 2.8 (simon 66 to 55 against 56, but samus and mario 3 to 4 further off), and the body also meets walls, floors and ledges, so it is not changed. tried on nine fighters (bodies centred at conversion): isaac's gaia, ness's pk flash and zelda's din's fire still land nothing and krystal's jab moves a degree, so the offset is not what keeps those apart. this engine's published api has nothing that pushes or stops a push (its fighters part as soon as their bodies overlap, the source's a few pixels a frame), so the gap is the rate, not a shape: it shows only where the harness sets two fighters down inside each other, and the moves it keeps from landing (gaia, pk flash, din's fire, krystal's jab angle) are measured mid-push on the source. `hit_parity.py` now waits for two fighters it sets down to stop parting on both engines before it plays the move: on six fighters the moves that differ fell from 20 to 8 (mario's all match, isaac's gaia and zelda's din's fire land on both), as many land on one engine only (11), samus's bomb now lands nothing here, and a few aerials land nothing on the source from where the two settle. where they settle still differs for some (isaac 50 there and 41 here, krystal 48 and 37.5): the bodies' widths, not the push's rate. a body as wide as every frame's hurt boxes together, centred (the span the source's own gap follows), tried on the same six: krystal's jab and simon's side special come right, isaac's gaia and down air and samus's up air go wrong, 10 moves differing against 8 and 13 landing on one engine against 11, so the bodies stay as the hurt boxes of each frame make them; `tools/tests/roster_report.py` reads a sweep). a fighter a hit stuns is hurt by the time the hit's events are told, as in the source, where this engine turns it after them, and a stat no character states reads as the source reads it (`canReceiveKnockback`, stats.jsonc `runtime_read_defaults`): krystal's jab pulls the fighter it strikes in with its own code, and does here too. a hit that launches nothing still counts as landed in `hit_parity.py`. a hit a fighter's code deals outright (`takeDamage`) is a whole hit, its launch and freeze as well as its damage, a growth it leaves out the source's 100 and one with no effect launching nothing, and an event names a projectile its script fired as the same object it was handed when it fired it: naruto's down throw lands its three hits as in the source (its clone's hit, recognised as the clone, sends the fighter straight up for the kick). a projectile fired with stats (`fireProjectile`'s last argument) reads them over its own for its life, and one that never says it is suspended reads `suspend` false: krystal's grenade throws as far as its charge says and explodes on what it strikes, as in the source. a projectile is drawn and struck at the scale its code gives its own clip (samus's bomb sets 1.75 on itself), a stat stated just above nothing stays above it (the bomb's fuse deals 0.00000001 so its touch sets it off). a falling projectile's first move takes its frame's pull first, as the source's does, and goes on with a step and a half more to stand for this engine adding the pull after each move (waluigi's dice, thrown up at 5, peaks where the source's does and lands on its fighter, where it rose 8 pixels too high and flew over; its fall still runs about a frame ahead). a projectile keeps its speed along the floor and through the air but for the decay it states, as the source's does, and a decay slows it to a stop and holds it there rather than turning it back (sora's strike raid stops and hangs over the fighter it drags, which it hits ten times and then throws, as in the source, where it drifted back off it here and hit eight) (this engine's own friction stopped simon's holy-water flame in two frames; it now runs along the floor and burns its fighter three times, as in the source), and a dying projectile is held still by its script rather than by its death animation, which can be a label it also lives in. a projectile's x speed is read and written along the way it was thrown, as the source's is, and one its own code has not turned says it faces right whichever way it was thrown, where this engine keeps the speed along the way the projectile faces (thrown left, fox's laser went right, chibi-robo's telly vision ran off from him and link's boomerang turned home at once). thrown left, simon's cross and link's boomerang and arrow now follow the source's path frame by frame. `proj_parity.py --left` plays every move thrown left, the layout mirrored so the thrower faces the other fighter. a projectile's code that reads a fighter's place in its update sees where the fighter is about to be, as the source's does (the source moves a fighter in its own update, before its projectiles' code runs; sora's strike raid rides his hand frame for frame, where it trailed a frame of his rise). a projectile's box that states a freeze of 0 freezes nothing, as a fighter's does (ness's pk fire states its own freeze 0, and its pillar's hits fall on the source's frames). the bomb's blast lifts samus as the source's does: a rocketed fighter starts the attack the source rockets it in at that attack's `rocket` frame and rides the speed and angle it was given, `decay` less a frame, until the attack ends (the path matches the source's from its first frame; the move ends a source frame late here). the attack is entered on the animation the conversion made of its label, and what a projectile's code writes to its boxes holds for its life and on the hit itself, even on a box that has only just come out with a new animation (the bomb's blast hits for 7 played by hand). `hit_parity.py`'s held press still never sets the bomb off (open). krystal's jab sends the fighter it pulls at 101 degrees here and 111 there: its code aims from the two fighters' places, and the angles say they stood about 40 apart here and 49 there, which is the push above. zelda's din's fire (side special) flies the source's path to the pixel and grows at its rate; its burst's boxes are out here (read off the engine as it bursts, the widest for two engine frames), and their edge stops a few pixels short of the fighter, which this engine has pushed further off as zelda walks in: the push above again. the source lands it set 64 apart (its fighter is not pushed there) and the port lands nothing. an attack's `refreshRate` refreshes it as the source's does: its frames are counted only while the attacker is not frozen, a refresh comes once the attack has landed a hit, on the count's Nth frame and every N after, and another only after a frame the attacker is free and has not just refreshed; a move pressed for counts a frame ahead of its first, a throw (begun from the hold) does not (meta knight's drill, refreshed every frame, lands one hit every three frames as the freezes go, where it landed one every two and held its fighter in; lloyd's side special and bowser's up throw land on the source's frames). a box that passes over the fighter held (`bypassGrabbed`) passes over the one the attack has just thrown too (sheik's and lloyd's throws struck it again with the box meant for those standing near). the source also counts toward a refresh the frame after a hit, while the attacker is frozen, and the frozen attacker's boxes still hit; this engine runs nothing of the fighter while it is frozen, so that refresh comes as the hit lands (meta knight's drill lands its second hit the frame after its first, as there). bandana dee's neutral special (refreshed every four, the attacker frozen one) lands that second hit here and not on the source, where meta knight's drill (every frame) does; what tells the two apart there is open. jigglypuff's down air lands its hits on the source's frames (0, 1, 4, 7, 10 on both); how many more it lands as it falls to the floor follows the hop, as every aerial's count does. a fighter's code that asks how long its controls have been held (`getSmashTimer`, telling a flick from a hold) is answered as the source counts it: 0 on a frame nothing is held but while landing or skidding, one more on any other, and out of reach once an attack ends or the fighter lands, where it read as never pressed: samus's side special fires its power missile off a fresh press, as in the source (it fired the homing missile every time). naruto's rasengan (neutral special) keeps its charge between uses (`gvar p0 NarutoNSpecCharge 75` sets it full on either engine), and charged full it lands as the source's does: its hit, the rasenshuriken's ten grinding hits on the source's frames, and one burst. `hit_parity.py` plays an aerial off a short hop, and on the source it names the move after a round trip, so the source's aerial starts wherever the trip lands (lloyd's down air at the top of the hop, about frame 8) while the port's is pressed on frame 3 of the hop (`hop_trace.py`: the two hops rise within a pixel of each other). pressing both on the same frame (`HP_AIR_SEQ=1`, `HP_AIR_AT=N`) moves which aerials land more than it settles them (on eight fighters' aerials: 14 differing as played, 21 at frame 3, 16 at frame 7), so the multi-hit aerials' counts (lloyd's, wario's and jigglypuff's down airs) are read against when each was started, not taken as the port's a projectile's code is told of its touchdown with the speed it came down at, and a bounce it gives itself there holds once the engine has settled the landing; a touch as it is made, short of where it is fired to, is no landing: waluigi's dice bounces once and lands its hit as in the source (its roll differs run to run). a fall cap a projectile's code writes (`maxgravity`) reaches the engine, 0 holding it where it is (ness's pk flash bursts and hangs; it fell on here, and landed by falling onto the fighter, where the source's lands from where it hangs: the hanging burst misses here as the two nesses stand, which is the push above). a projectile fired into the floor its fighter stands on starts on that floor, as the source's does (isaac's up special fires its scoop 30 below his feet, and it sat inside the stage here). a projectile's art and boxes sit where its clip places its stance (isaac's down tilt thorns were drawn and boxed 61 px below the floor, and hit nothing; mario's fireball box sat 9 px ahead and 10 up of the source's). `tools/tests/bounce_trace.py` shows a launch frame by frame. a fast shot
 reaches from another distance on each engine (chibirobo's, krystal's, samus's and sheik's neutral specials:
 each engine steps the shot past a different set of distances), game & watch's chef lands a pan and a sausage
 in one source frame (its sausages fly at random), and isaac's up tilt reaches farther here. 31 of the 35 are aerials: each engine starts the aerial at a
@@ -341,8 +338,7 @@ every character:
     this engine's segment test against its structures, one structure type per ask (floor,
     ceiling, both walls): a terrain body's surface counts unless `terrains` is false, a
     drop-through floor unless `platforms` is false or `ignoreFallthrough` is set. twenty fighters
-    ask it in recoveries, landings and teleports; it was folded as always false, which took the
-    empty-air branch over solid ground.
+    ask it in recoveries, landings and teleports.
   - the ground at a point (`hitTestGround`) is a structure's line within a pixel of it, or the
     solid body it is inside (the structures' lines a line out to the right crosses an odd number
     of times), so a point below a floor's surface is ground, as in the source (sandbag's bob-omb
@@ -365,8 +361,7 @@ every character:
     (pikachu's side special from a jump refuses his up special until he is down).
   - a jump to a frame NUMBER of the clip an animation was cut from lands on the piece that holds
     that frame, at the frame inside it (`_playSrcFrame`, off the `_splitFm`/`_splitAt` table):
-    lucario's recovery picks the pose for its angle that way, and a jump to a number played
-    nothing at all before, so its climb ran while it was already falling.
+    lucario's recovery picks the pose for its angle that way.
   - a name the fighter's class declares but never fills is the child its clip places under that
     name, which the source's engine binds for it: ryu's costume trails and metaknight's colour
     pieces are parts the port shows and hides like any other. a name its own code fills (dedede's
@@ -523,23 +518,18 @@ read live the same way the port is (`peptide ssf2 session --char mario --stage b
   source      about 8 cells held, 7 of them bricks
   port        (9,11) (4,4) (8,8) (2,2) as (bricks, held), sampled 30s apart
 
-the port's occupancy moves up and down now instead of climbing, and nearly everything it holds is a
-brick, which is what the source does. brick coverage in frame went from 2.2% of the visible cells to
-8.9%, against the source's 11.6%.
+the port's occupancy moves up and down rather than climbing, and nearly everything it holds is a
+brick, which is what the source does: brick coverage in frame is 8.9% of the visible cells, against
+the source's 11.6%. the spawn picks a brick with probability `(100 - held * 3.5) / 100`, so a cell
+held by nothing would push the mix toward bombs; two general rules keep cells from leaking:
 
-what it was: cells stayed held by blocks that were already gone, and the spawn picks a brick with
-probability `(100 - held * 3.5) / 100`, so every cell held by nothing pushed the mix further toward
-bombs. at the 15 to 23 the port used to hold that is 47% down to 18%, against 72% at the source's 8.
-two things were leaking cells, both fixed and both general:
+- a body's own platform is the structure its create returns, not an index taken from the
+  structure list's length before creating it (a create that lands late would leave that index one
+  past the end).
+- a class that ends its own life releases what it reserved from `onKill` as well, once, so an
+  object that leaves any way other than its own destroy line still releases.
 
-- a body's own platform was found by taking the structure list's LENGTH before creating it and using
-  that as the index. when the create did not land right away the index was one past the end, and
-  reaching past the list stopped the script that did it.
-- a class that ends its own life released what it reserved on the way out, but only if it reached
-  that line. the release is a queued ask and the destroy is immediate, so an object that left any
-  other way never released. the cleanup now runs from `onKill` as well, once.
-
-how a stage object is built now, and it is the same for all three: the class states what it is by
+how a stage object is built, the same for all three: the class states what it is by
 what it EXTENDS (`SSF2Enemy`, `SSF2Platform`), what it looks like by the `linkage_id` it names and
 the labels its own code plays, what it hits for by its own `getAttackStats`, where it goes by its
 own setX/setY against the terrain anchor, and what it DOES by its own `update()`/`initialize()`,
@@ -648,7 +638,7 @@ the last row is the check: that move took no part in fitting either factor.
 the values are emitted FRACTIONAL. rounding a scaled knockback to a whole number costs about 2%
 of a light hit's launch, which is more than the factors themselves are uncertain by.
 
-**hit TIMING converts too, and not the way it was being converted.**
+**hit TIMING converts too.**
 
 | SSF2 | Fraymakers | conversion | why |
 |---|---|---|---|
@@ -820,8 +810,7 @@ measured live afterwards, against what the source's own arithmetic says each lau
 | tilt_forward | 10 / 100 | 7.349 | 4.777 | 4.777 | 1.000 |
 | tilt_up | 26 / 125 | 11.677 | 7.590 | 7.589 | 1.000 |
 
-`tilt_forward` is the one that read 1.378 before, and it was the growth-heavy move that exposed
-the two-factor fit.
+`tilt_forward` is the growth-heavy move the two-factor fit is checked against.
 
 ## open parity dimensions
 
@@ -839,37 +828,27 @@ the two-factor fit.
   check knows it. the live half is the `record`/`trace` frame recorder (both
   engines push per-frame telemetry); it confirms the emitted lengths actually play that
   way, on a sample rather than the whole roster.
-- **a combo chains again**. SSF2 chains a combo by jumping its timeline to a label, and
-  the jump was translated to a call nothing answers to, so it died with "Invalid function null"
-  and the combo stopped at its first hit. The label that STARTS the next stage is an animation
-  now, so the jump is `playAnimation` at the name the split gave it; a label still inside an
-  animation stays `playFrameLabel`. The timer that reads the button was dying too -- its options
-  argument is an object on both sides and content passes a bare boolean there. mario's jab: 3%
-  and one hit before, 9% and all three after, no script errors.
-- **a frame whose code ends the move is no longer emitted**. the two engines run a
-  frame's code on opposite sides of drawing it: SSF2 runs it FIRST, so a frame carrying
-  `endAttack` hands control away before anything is drawn and never appears; Fraymakers runs it
-  AFTER, so emitting that frame showed a pose the original never displayed and the move ran one
-  source frame long. the trim happens before any layer is built, because an animation's length is
-  its LONGEST layer -- trimming only the images left the labels at the old length and the
-  animation exactly as long as before, just inconsistent.
+- **a combo chains by its label.** SSF2 chains a combo by jumping its timeline to a label; the label
+  that starts the next stage is an animation, so the jump is `playAnimation` at the name the split
+  gave it, and a label still inside an animation stays `playFrameLabel`. the timer that reads the
+  button takes the options object both engines expect. mario's jab lands all three hits (9%).
+- **a frame whose code ends the move is not emitted**. the two engines run a frame's code on
+  opposite sides of drawing it: SSF2 runs it FIRST, so a frame carrying `endAttack` hands control
+  away before anything is drawn and never appears; Fraymakers runs it AFTER, so emitting that frame
+  would show a pose the original never displays and run the move one source frame long. the trim
+  happens before any layer is built, because an animation's length is its LONGEST layer.
 
   ONLY an explicit `endAttack` counts. a `gotoAndStop` is as likely to be a LOOP inside the move
-  (a smash holds its charge with one), and treating that as an ending trims a frame the original
-  does draw.
+  (a smash holds its charge with one), and treating that as an ending would trim a frame the
+  original does draw.
 
   measured on the fixture, sandbag, both engines: jab, tilt_forward, tilt_up, tilt_down,
-  aerial_neutral, aerial_forward, aerial_up, aerial_down and special_down are all now exactly
-  2.00, against 2.10-2.17 before.
+  aerial_neutral, aerial_forward, aerial_up, aerial_down and special_down are all exactly 2.00.
 
-- **split animations were losing every frame script**. the mapping files speak in parent
-  names -- `a` becomes `jab`, never `jab1` -- so looking an SSF2 animation up by a split PIECE
-  name found nothing, and nothing is indistinguishable from "this animation has no scripts".
-  sandbag's jab was emitted with zero frame scripts: no dust, no swing sound, and nothing marking
-  where the move ends. pieces resolve through their parent now, and jab went from 3 missing
-  scripts and 2.15 to 3 scripts and exactly 2.00.
-
-  worth a corpus pass: every character with a multi-hit jab was missing those scripts.
+- **a split animation keeps its frame scripts**. the mapping files speak in parent names (`a`
+  becomes `jab`, never `jab1`), so a split PIECE resolves its scripts through its parent; looked up
+  by the piece name it would find nothing, which is indistinguishable from an animation with no
+  scripts. sandbag's jab carries all 3 of its scripts (dust, swing sound, the move's end) at 2.00.
 - **stage weather is ported**. a stage can build particle weather in CODE rather than on a
   timeline, so nothing else in the pipeline sees it: the art walk finds no placement and the hazard
   path finds nothing that damages anyone. bowserscastle converted with every layer correct and the
@@ -898,9 +877,9 @@ the two-factor fit.
   off `getViewportWidth()/getZoomScaleX()` re-derived per frame is what makes it the same field, and
   since both are one screenful the source's particle COUNT carries over unchanged.
 
-  the viewport is reported in WORLD units and already accounts for zoom, so dividing by the zoom
-  scale is wrong: it pins the field to a constant 480 half-width while the visible half-view is
-  ~690, leaving the sides bare. sizing straight off the viewport tracks it. verified live through
+  the viewport is reported in WORLD units and already accounts for zoom, so the field is sized
+  straight off it (dividing by the zoom scale would pin it to a constant 480 half-width while the
+  visible half-view is ~690). verified live through
   the borrowed content interpreter, which can read the stage script's own state: with the fighters
   1200 apart, `halfW` 1035.6 against a viewport of 1380.8, particles spanning -704..935, and the
   worst per-particle tether error across all 30 exactly 0.
@@ -922,14 +901,13 @@ the two-factor fit.
 - **weather is detected by the engine call it makes, not by a class name**. a stage hands
   its weather's container to the engine's weather layer, so "the object whose `getContainer()` is
   added to `getWeatherMC()`" identifies it exactly, on every stage that has any, without knowing a
-  single class name. keying on a name containing "weather" found 2 of the 8 stages in the corpus
-  that call it, and only if the construction sat in `initialize` (clocktown builds its rain behind
-  a state machine, smashville in `syncStage`).
+  single class name, wherever the construction sits (clocktown builds its rain behind a state
+  machine, smashville in `syncStage`).
 
   the COUNT and area come from the class too, not from the call: the constructor says which
   parameter lands in which field, and the signature carries the defaults for whatever the stage
   did not pass. bowserscastle passes only the particle class and takes the rest from those
-  defaults, which is why reading the call site alone found nothing. its real numbers are 50
+  defaults, so the call site alone says nothing. its numbers are 50
   particles over 640x360 -- and that area being exactly one SSF2 screen is independent
   confirmation that a weather field is meant to be one screenful.
 
@@ -945,22 +923,12 @@ the two-factor fit.
   a stage whose count cannot be read emits NO weather rather than a loop over nothing, which would
   render as a stage that carries weather and shows none.
 
-- **the "revival platform frame" was the harness, not the converter**. a frame of the
-  revival pose showed up at the head of tilt_up, down_smash and walk. the emitted animations are
-  clean -- tilt_up carries a body layer and a motion smear and nothing else, and the unused image
-  layers really are blank -- because nothing was wrong with them.
-
-  the sweep parked aerials BELOW the floor, which is right on the fixture (open space, blast
-  boundary far below) and wrong everywhere else: on an ordinary stage, below the floor IS the blast
-  zone. the engine KOs and respawns the character, and the two frames of REVIVAL that follow land
-  at the start of the next move. measured on thespire, whose floor is y=73: parking at y=600 gives
-  `revival x2` then stand, parking at y=73 gives stand alone, and a bare `reset` never produces it.
-
-  two fixes. the floor is MEASURED per engine at the start of a sweep (drop the character, see
-  where it stops) instead of being the fixture's constant applied to every stage. and aerials park
-  high ABOVE the floor with enough clearance for ~100 frames of fall, so a move still gets to
-  finish: an aerial now reads `aerial_neutral x40` then fall then land, where before it was
-  whatever the respawn left behind.
+- **the sweep parks a character on the measured floor**. on an ordinary stage, below the floor IS
+  the blast zone, so a character parked there is KO'd and its revival frames land at the start of
+  the next move. the floor is MEASURED per engine at the start of a sweep (drop the character, see
+  where it stops), and aerials park high ABOVE it with enough clearance for ~100 frames of fall,
+  so an aerial reads `aerial_neutral x40` then fall then land (thespire, floor y=73: parking at
+  y=600 gives `revival x2` then stand, parking at y=73 gives stand alone).
 
 - **effects an object does not carry are not spawned.** the engine does not check the effect name
   it is handed: an effect made on a name the object has no content for draws the object's own first
@@ -982,14 +950,14 @@ the two-factor fit.
   pichu's `pichu_jolt_spark`, and kirby's `ness_pkflasheffect`, `Kirby_sandbag_*` and
   `sandbag_confetti`.
 
-- **four animation/effect faults, all fixed.**
+- **effect facing, turns, crouch exit and fall loops.**
 
-  | fault | cause | fix |
-  | --- | --- | --- |
-  | effect placements ignored facing | the source flips the offset by hand (`self.flipX(78)`) AND fraymakers mirrors it via `flipWith`, so the two cancelled | drop the source's flip exactly when `flipWith` is set. measured live: `flipWith` + raw `x: 78` lands at +78 facing right, -78 facing left |
-  | `run_turn` faced backwards | only its FIRST frame was mirrored | a turn is drawn facing the direction turned FROM and the engine flips facing when the turn starts, so the whole animation mirrors -- scaleX, x AND rotation, since reflecting about the vertical axis maps an angle to its negative |
-  | `crouch_out` played like a second crouch | the exit slot cloned the entry FORWARD | splits carry a `reversed` flag; the exit runs the entry backwards |
-  | `fall_loop` looped wrong, and the fall looked like the jump never ended | the loop was sliced at a template constant, and the peeled entry frames were appended to the END -- so every cycle flashed the entry pose | the loop comes from the clip's OWN loop-back call |
+  | rule | how |
+  | --- | --- |
+  | an effect's offset follows facing once | the source flips the offset by hand (`self.flipX(78)`) and fraymakers mirrors it via `flipWith`, so the source's flip is dropped exactly when `flipWith` is set (measured live: `flipWith` + raw `x: 78` lands at +78 facing right, -78 facing left) |
+  | `run_turn` faces the way it turns from | the engine flips facing when the turn starts, so the whole animation mirrors: scaleX, x AND rotation, since reflecting about the vertical axis maps an angle to its negative |
+  | `crouch_out` plays the entry backwards | splits carry a `reversed` flag; the exit runs the entry in reverse |
+  | `fall_loop` loops at the clip's own loop point | the loop comes from the clip's OWN loop-back call, with the entry frames peeled off the front |
 
   the loop detection is structural, not a name list: a looping SSF2 stance ends by playing a label
   again from its final frame, so `source_loop_frame` reads that call's target and looks up where
@@ -1027,78 +995,52 @@ the two-factor fit.
   tethered to the camera (worst per-particle error 0) and spanning the view, the hazards switch
   wired, and both caution-sign hazards spawned.
 
-- **a clip the mapping file does not name kept none of its scripts**. two passes named the
-  same sub-MC differently: the sprite side reads the MAIN TIMELINE (which xframe label placed this
-  clip), the script side guessed from the class name against `label_to_ssf2`. a variant the table
-  does not list -- `DownSpecialAir` next to `DownSpecial` -- resolved to nothing on the script
-  side, and a sub-MC that cannot be named is SKIPPED, so every frame script it had was dropped.
+- **a clip the mapping file does not name keeps its scripts**. the sprite side and the script side
+  name a sub-MC the same way: the main timeline first (which xframe label placed this clip), the
+  label heuristic only as a fallback, so the two passes agree by construction. a variant the table
+  does not list (`DownSpecialAir` next to `DownSpecial`) keeps every frame script: sandbag's aerial
+  down special runs all 18 (input poll, momentum, floor listeners). what remains unnamed is what
+  should be: ChargeSpark, CollisonBox, groundRef_mc, itemPlaceholder_mc.
 
-  sandbag's aerial down special had 0 of its 18 scripts while the grounded one had all 18: no
-  input poll, no momentum, no floor listeners. it now runs them all, and driving it while airborne
-  travels 2255 units on a held direction where it used to do nothing, with no script errors.
-
-  the fix is to ask the timeline first and fall back to the label heuristic, so the two passes
-  agree by construction rather than by both being taught the same names. what remains unnamed is
-  what should be: ChargeSpark, CollisonBox, groundRef_mc, itemPlaceholder_mc.
-
-- **sideways momentum reversed when facing left**. SSF2's `setXSpeed` is WORLD-space and
-  fraymakers' is FACING-RELATIVE, so copying the call across is only right while facing right.
-  measured in both engines rather than argued about: facing LEFT, SSF2's `setXSpeed(15)` moves the
-  character RIGHT (+147) and fraymakers' moves it LEFT (-305); `setXSpeed(flipX(15))` facing left
-  moves RIGHT, matching. so the argument is wrapped in `flipX`, which is what turns a world-space
-  number into the facing-relative one fraymakers wants. a literal zero is left bare -- a stop needs
-  no direction. `setYSpeed` needs no wrap; there is no facing on the vertical axis.
+- **an x speed is world space in the source and facing-relative here**. measured in both engines:
+  facing LEFT, SSF2's `setXSpeed(15)` moves the character RIGHT (+147) and fraymakers' moves it
+  LEFT (-305), so a world-space write is wrapped in `flipX`. a write the source marks relative
+  (`setXSpeed(v, false)`), a zero, and a speed worked out from the engine's own reading are left
+  bare. `setYSpeed` needs no wrap; there is no facing on the vertical axis.
 
   `setXVelocity` is NOT the world-space alternative: measured airborne, it moves the character not
   at all.
 
-- **a speed reached through a variable was not converted**. only literal arguments were
-  rescaled, so a move that dashes at a constant its constructor assigned (sandbag's aerial down
-  special: `leftSpeed = -15`, `rightSpeed = 15`) ran at the raw SSF2 number -- about 15 per frame
-  at 60fps where 9.75 is the conversion. an argument is now scaled unless it came back OUT of the
-  engine (`decel(getXSpeed(), …)` is already in fraymakers units and would shrink each frame).
+- **a speed reached through a variable converts like a literal**. a move that dashes at a constant
+  its constructor assigned (sandbag's aerial down special: `leftSpeed = -15`, `rightSpeed = 15`) is
+  scaled at the write; a value that came back OUT of the engine (`decel(getXSpeed(), …)`) is
+  already in fraymakers units and is left alone. verified live: from BOTH facings, holding right
+  dashes right (+385, +386).
 
-  verified live on that move: from BOTH facings, holding right dashes right (+385, +386) and
-  holding left gives -8.7 velocity, where before it ran at the raw speed and reversed facing left.
+- **a still backdrop is drawn once, whatever moves over it**. SSF2 draws a backdrop as many shapes
+  on many depths inside ONE clip. a clip's shapes split by the DEPTH each sits on where it pays: a
+  depth whose content changes becomes its own element, every static depth stays merged into one
+  composite, and a clip that is entirely static or entirely moving is left whole (splitting a group
+  where everything moves trades one shared canvas for several mostly empty ones). a blended group
+  is never split: a hard-light mask is baked by compositing it over the art beneath it.
 
-- **a still backdrop is no longer re-drawn because something moves over it**. SSF2 draws a
-  backdrop as many shapes on many depths inside ONE clip, and the art walk flattened the whole clip
-  to a bitmap per frame. clocktown's town backdrop is 739x436 with a clock hand turning two hundred
-  pixels away, so it emitted that whole picture 623 times: 3379 sprites, 263MB, and FrayTools would
-  not publish it at any timeout.
+  clocktown is 81MB and 1550 sprites, its town plate 10 frames; it exports (an 18MB .fra, ~110s)
+  and renders with no script errors. bowserscastle is 8.7MB/732.
 
-  a clip's shapes now split by the DEPTH each sits on, but only where it pays: a depth whose content
-  changes becomes its own element, every static depth stays merged into one composite, and a clip
-  that is entirely static or entirely moving is left whole. that last part matters -- splitting a
-  group where everything moves trades one shared canvas for several union-of-path canvases that are
-  mostly empty, which DOUBLED bowserscastle's art when the rule was unconditional. a blended group
-  is never split either: a hard-light mask is baked by compositing it over the art beneath it.
-
-  clocktown: 263MB -> 81MB, 3379 -> 1550 sprites, its town plate 664 frames -> 10. it exports (an
-  18MB .fra, ~110s) and renders with no script errors. bowserscastle: 8.8MB/739 -> 8.7MB/732, i.e.
-  untouched.
-
-- **art the source MOVES is emitted once and moved, not baked per angle**. a turning clock
-  ring is a handful of cels and a matrix per frame in SSF2; rasterising each frame stored it as a
-  bitmap per ANGLE -- clocktown's rings alone were ~67MB across five elements whose every frame was
-  unique. an element whose frames show at most ONE shape each (from a small set of cels) is now
-  emitted as those cels, once, with the per-frame orientation carried on the frame. "at most one
-  per frame" is the guard that separates a few things moving from a picture redrawn out of many
-  shapes, so the cel ceiling can be generous.
+- **art the source MOVES is emitted once and moved, not baked per angle**. a turning clock ring is
+  a handful of cels and a matrix per frame in SSF2. an element whose frames show at most ONE shape
+  each (from a small set of cels) is emitted as those cels, once, with the per-frame orientation
+  carried on the frame; "at most one per frame" separates a few things moving from a picture
+  redrawn out of many shapes, so the cel ceiling can be generous.
 
   position by CENTRE, not by bounds: the art is the unrotated cel while the source's box is the
-  rotated one, so placing by top-left slides the piece as it turns (visible as the clock's rings
-  drifting apart). rotation keeps a centre still, and fraymakers draws an IMAGE centred at
-  `x + scaleX*w/2`.
+  rotated one, so placing by top-left would slide the piece as it turns. rotation keeps a centre
+  still, and fraymakers draws an IMAGE centred at `x + scaleX*w/2`. clocktown's rings stay
+  concentric.
 
-  clocktown: 263MB/3379 sprites -> 7.5MB/245, exporting in 25s to a 3MB .fra and rendering with the
-  rings concentric and no script errors. bowserscastle: 8.7MB/732, untouched throughout.
-
-  the conversion from an SWF placement to a fraymakers IMAGE is now ONE piece of code
-  (`fm_placement`) shared by the character and stage paths -- SSF2 content is SSF2 content, and an
-  arm on a character is placed by the same kind of matrix as a hand on a clock. the character path
-  moved onto it with its golden snapshot unchanged, and mirroring (scale, position AND rotation)
-  lives there too rather than being spelled out twice.
+  the conversion from an SWF placement to a fraymakers IMAGE is ONE piece of code (`fm_placement`)
+  shared by the character and stage paths, mirroring (scale, position AND rotation) included: an
+  arm on a character is placed by the same kind of matrix as a hand on a clock.
 
 - **the hazards switch is ported, not decided**. both engines let a match turn hazards off.
   in SSF2 the engine does not apply that to a stage: the stage ASKS (`SSF2API.isHazardsOn()`) and
@@ -1112,10 +1054,8 @@ the two-factor fit.
   ways: hazards on = lava + thwomp + spectator, hazards off = lava + spectator, thwomp gone, all 36
   structures still there and the fighter still standing on them.
 
-  the harness had been hiding this. peptide replaces the whole match config on a headless launch, so
-  a field it never set read as false and every test match ran with hazards OFF. `hazards` is now a
-  match setting like lives and time (`match_settings.conf`, default on), which also makes the off
-  case testable on purpose.
+  peptide replaces the whole match config on a headless launch, so `hazards` is a match setting
+  like lives and time (`match_settings.conf`, default on), and the off case is testable on purpose.
 
 - **special-angle sentinels.** SSF2 sentinel angles (`-1`/`-2`/`-3`…) are preserved
   faithfully, we just haven't mapped them to FM's special-angle codes yet. needs the
@@ -1126,7 +1066,7 @@ the two-factor fit.
   damage/KB *values* are an approximation of the real per-hit finisher. getting the true
   per-hit values means pulling hitbox activation frames out of the SSF2 sprite timeline.
 - **physics-stat tuning.** movement stats (gravity/fall/walk/jump/weight) are mapped and
-  scaled, but the `stats.jsonc :: multipliers` got hand-tuned by eyeballing template
+  scaled, but the `stats.jsonc :: multipliers` are hand-tuned by eyeballing template
   characters against SSF2 data. `friction`, `shortHopSpeed`, and the ECB head/hip/foot
   positions are hand-tuned constants too, so ground deceleration, short-hop, and hurtbox
   sizing are all approximate. generated `CharacterStats.hx` flags the shaky numbers with
@@ -1147,8 +1087,8 @@ the two-factor fit.
     →`hitTestStructuresWithLineSegment(new Point(x,y), new Point(x,y), null, null)` with
     the `!= null`/`== null` checks rewritten to `.length > 0`/`== 0` (Array return), the
     options arg dropped, and a TODO on the point→segment approximation; `if (… isForcedCrash …)`
-    blocks DELETED (no forced-crash in FM). AS3 global casts the decompiler wrongly
-    attached to `self` (so they were null → "Invalid function null"): `self.int`/
+    blocks DELETED (no forced-crash in FM). AS3 global casts the decompiler
+    attaches to `self`: `self.int`/
     `self.uint`→`Std.int`, `self.Number(x)`→`Std.parseFloat(Std.string(x))` (`Std` is
     in character-script scope, confirmed by a live probe). Stat fields: `hasEffect`→
     `flinch`, `sdiDistance`→`hitstopNudgeMultiplier` (value/6, since SSF2 default is 6),
@@ -1212,11 +1152,10 @@ the two-factor fit.
 `tools/tests/translation_completeness.sh` counts untranslated markers per character:
 `/* ? */` (decompiler couldn't recover an expr/condition/receiver), `[SSF2-only:` (no FM
 equivalent), and `TODO` (value punted to a default). lower is better. it's the safe
-before/after gate for decompiler/mapping changes, since a real fix should *drop* the marker
-count without adding new ones, and the in-engine spawn sweep still has to pass. read it
-alongside the amount of code emitted, though: a decompiler fix that recovers a previously
-dropped body ADDS markers, because the untranslatable calls inside it were invisible while
-the whole body was missing. seven characters are fully `/* ? */`-clean. the
+gate for decompiler/mapping changes: a change should *drop* the marker count without adding new
+ones, and the in-engine spawn sweep still has to pass. read it alongside the amount of code
+emitted, though: recovering a body the decompiler dropped ADDS markers, because the untranslatable
+calls inside it were invisible while the body was missing. seven characters are fully `/* ? */`-clean. the
 decompiler-quality outliers worth a focused pass are `bowser`, `kirby`, `dedede`, `rayman`,
 `krystal`, `sora`, `lucario`, `wario`.
 
@@ -1227,22 +1166,21 @@ discounted, so an entry there means "no Fraymakers equivalent" rather than "the 
 didn't recognize the name". corpus total is 1619 calls across 55 names (see "character
 system gaps" below).
 
-## what the verify gates found on the sample
+## what the verify gates hold the sample to
 
-the ten stages and ten fighters chosen for coverage, run through every gate. the element
-count sweep had called all of them clean; the gates found eight port bugs underneath, each
-general and each now fixed:
+the ten stages and ten fighters chosen for coverage, run through every gate. the rules the gates
+found the port needed, each general:
 
-| found by | what it was |
+| found by | rule |
 |---|---|
-| S3 sector z pinned the engine | a ported class kept each getter as a value worked out once and dropped its setters to field writes; a frame timer's `completed` read true from its first frame, so the stage spawned an arwing and fired the gun on every frame (accessors are code now) |
-| S3 sector z, 256 errors a match | `gotoAndStop(N)` landed on `playFrameLabel(N)`: a frame number is not a label (`playFrame(N)`) |
-| S3 galaxy tours, an error every frame | a receiver the port could not answer was written as the literal null and the call left standing (a call on nothing is a note) |
-| S4 fourside, spaceship gone on frame one | the flag that lets a class survive the death bounds was dropped; the engine destroyed an object the source parks above the stage (a self-platform object survives the bounds) |
-| C4 link walked at 0.33 a frame | his bomb class, which extends the item base, was folded into the fighter and its update exploded him out of every walk (a class that is its own object stays its own) |
-| S3 sector z, written for a comparison | the persistent-field rewrite matched the first `=` of `==`, so `if (m_decision == "shoot")` became a write (a comparison is not a write) |
-| C1 zelda and kirby, four divergences | the parity checker truncated fractional source damage to an integer |
-| C5 several fighters | none: every remaining difference was the gate's own launch condition, told apart by the evidence (parked into the blast zone, cut by landing, a fall that loops, a reply paired with the wrong question) |
+| S3 sector z | a ported class's accessors are code, its setters included (a getter worked out once read a frame timer's `completed` as true from its first frame) |
+| S3 sector z | `gotoAndStop(N)` with a number is `playFrame(N)`; a frame number is not a label |
+| S3 galaxy tours | a call on a receiver the port cannot answer is a note, not a call on the literal null |
+| S4 fourside | a self-platform object survives the death bounds, as the source parks one above the stage |
+| C4 link | a class that is its own object stays its own (link's bomb, extending the item base, is not folded into the fighter) |
+| S3 sector z | a comparison is not a write (`if (m_decision == "shoot")`) |
+| C1 zelda and kirby | the parity checker compares fractional source damage as it is |
+| C5 several fighters | a difference the gate's own launch condition causes (parked into the blast zone, cut by landing, a fall that loops, a reply paired with the wrong question) is the gate's, told apart by the evidence |
 
 still open, and what decides each:
 
@@ -1250,196 +1188,108 @@ still open, and what decides each:
   walk-in frame script sets 3.25, and SSF2 driven the same way walks at 3.67 a source frame,
   which scales to 3.49. the walk is faithful; the STAT is the odd one out (the extractor takes
   the dash figure for the walk cap when the source drives the walk from its frame scripts),
-  and C4 now accepts a speed the fighter's own walk scripts set.
+  and C4 accepts a speed the fighter's own walk scripts set.
 - three fighters keep a dash attack seven to ten frames past the emitted animation while mario
   is exact, and several moves end early by their own code. whether the source keeps the same
   frames is C6's question too; C5 reports both and rules on neither.
 - sector z's arwing flies, decides and fires (live): its update reads as the source wrote
   it, the flight branch closed and the decision block and state switch on their own. the
   decompiler's merge finder takes a branch whose taken side sits after its fallthrough side
-  (the fallthrough region's jump past the taken side's start is the merge); before, that
-  taken side ran to the end of the method and swallowed everything after it.
+  (the fallthrough region's jump past the taken side's start is the merge), so the taken side
+  does not run on to the end of the method.
 - saffron city passes every gate: its two platforms run their class's cycle (rest, a target
   higher up, back, with the 60-frame sway on top) and carry their art with them. two general
-  faults sat under it. an object's scripts converted places through an origin worked out from
-  the places the stage's code states, and this stage's pokemon spawner has no art, so the
-  parser had it at 0 and the median put every object's sums 700 px off the terrain; where the
-  source has a terrain clip its registration is the origin now. and a clip group answered its
-  class's moves from 0, because the group was built under the script's alias for a name that
-  clashes with a stage field while the tree's box sat under the source's name; the group goes
-  by the source's name, and keeps its place in its plane's space. `tools/floor-profile.py`
+  rules hold it: where the source has a terrain clip, an object's places are converted through
+  that clip's registration as the origin (not a median of the places the stage's code states,
+  which a spawner with no art would pull 700 px off); and a clip group goes by the source's name,
+  not the script's alias for a name that clashes with a stage field, keeping its place in its
+  plane's space. `tools/floor-profile.py`
   came out of it: a fighter dropped at every x on both engines, rest heights side by side.
 - C6 runs: the same inputs on both engines, each engine's own per-frame trace, the move
-  named through the fighter's own map. what it has found so far, and what stands:
-  - six fixed: a listener for touching the ground fired while standing (a landing is a
-    transition now), a grounded special dropped to a fall the frame the fighter rose (grounded
-    attacks keep their animation airborne now), a jab handing its control check to a timer got
-    a helper clip's check with the same name (only the timeline's own renames reach frame
-    scripts now), and every jab chained into its second hit on a single tap because "how long
-    since this move was last used" had been struck to an empty object (the script keeps that
-    count now), fox's jab found a flag already set because a field nobody declares took its
-    initial value from the first literal write in file order, which was another clip's frame
-    script (only a constructor write is an initial value now, and a helper clip's own fields
-    start at their defaults on its first frame), and two clips that carry the same method name
-    both reached the one that was kept (a clip's own methods are wired by label now).
-  - and two more since: a helper clip's lead-in frames, the ones before its first labelled
-    frame that no piece shows, dropped their scripts (a jab's setup, which reads the
-    fighter's controls and the shared jab flags, never ran; they run on the first frame of
-    the piece that follows now), and a jump to a label inside the same clip (link's bow
-    jumping to `attack`) was read as a change of animation and struck (a frame jump now).
-  - a timer the source runs every frame ran every engine frame in the port, twice the
-    source's rate: a one-frame tap read as held across two of its checks, and samus's charge
-    shot took that for a second press and stowed itself (the whole class of charge and hold
-    specials was affected). a per-frame source timer now fires once a source frame, like
-    every other frame count, under either name the source arms it by (donkey kong's punch
-    armed its check by the other one and fired on a tap). the attack table the fighter reads
-    its own numbers from is in the source's units for the same reason: the counters that read
-    it tick once a source frame.
-  - what looked like the source ending attacks early with no script saying so (mario's
-    neutral special playing 17 of 23 source frames) was the corpus copy being another build
-    of the fighter than the installed game's own data: the game's mario has an 18-frame
-    fireball clip, the corpus a 23-frame one. the gates convert from the installed game's
-    file when it is present (TESTING "the verify gates"), so the two halves of a comparison
-    read the same content.
-  - read from the game's own data, the five fighters it was run on (mario, fox, samus, link,
-    donkeykong) pass every gate, after three more port fixes it surfaced: a method's jump to a
-    label is resolved by the animation playing (inside it when it carries the label, else to
-    the animation the label starts; link's bow and its charged smash both say `attack`), an
-    attack's own numbers travel with it and a read of one looks them up by the animation
-    playing (fox's reflector read its charge cap as nothing and released at once), and the
-    terminator trim repeats while the frame now last still ends the move (fox's blaster ends
-    on its last two frames). the driver puts the fighter back where it started between inputs
-    and holds a direction before a side special, since a direction pressed on the same frame
-    reads as a flick on the source (samus's super missile).
-  - all ten sample stages pass every gate from the game's own data, the cross-engine half
-    included.
-  - a comparison on a field the fighter has not written yet went the other way from the
-    source's undefined (samus's charge shot read a null charge as already full and stowed
-    itself): the fighter's own fields compare through helpers that answer false for nothing.
-    a clip's own frame read as the bare timeline property was struck before it was
-    translated, and the block around it with it (fox's reflector); it is read first now.
-  - an attack that declares a charge time and does not declare its own charge handling is
-    charged by the source's engine while its clip sits in the "charging" label (held it stays,
-    let go it plays "attack", run to its charge time "finishedcharge"; link's spin attack has
-    no scripts of its own for any of it); the port's fighter update does the same. inferred
-    from three fighters measured live and stated here as such.
-  - a grounded attack that hops (sandbag's up special tosses a bomb from a short jump) was cut
-    by the landing in the port, where the source runs the clip to its end: a grounded attack
-    keeps playing when it comes back down now (`landType` NONE beside the `leaveGroundType`
-    NONE the template already gave it).
-  - two of what looked like the source's engine supplying a mechanic were the gate and the
-    port: sonic's homing attack found a second fighter on Fraymakers (training mode's dummy)
-    and nobody on SSF2 (a solo roster), so both engines get the same two-fighter roster now
-    with the other fighter parked the same distance away; and pikachu's thunder cloud was
-    launched sideways at the template's default speed and at the fighter's own height, since
-    a projectile that states no x speed now launches with none (the source's cloud parks, its
-    bolt drops straight down) and a slot a clip only reads, declared with a value, starts at
-    that value (the cloud's height above the fighter, which the clip never writes).
-  - still open: donkey kong's punch keeps charging after a tap where the port lets go, and
-    sonic's side special ending in a fall in the port and on a ledge hang in the source.
-  - the walk, held the same fifteen source frames from a stand on both engines and read off
-    each engine's own per-frame record, is a new comparison in C6 and it finds two gaps: the
-    source's zelda walks up to 5.7 a tick and holds it (the converter takes 4.0 from her
-    declared figures, so the port walks 2.6 against the source's 3.7 scaled), and sandbag's
-    walk is a hop on both sides but not the same hop: its walk clip sets 3.25 and then 0.65 in
-    the source and in the port alike, yet the source moves 6.1, 7.2, then 8 a tick for five
-    ticks. both gaps sit in how the source's engine turns a declared or set speed into motion,
-    not in the scripts, and its speed model is the thing to measure next.
-  - closing numbers, all ten fighters run on the finished driver from the game's own data:
-    all ten pass every gate (mario, link, samus, kirby, sonic, donkey kong, fox, zelda,
-    sandbag, pikachu). all ten sample stages pass every gate. two fighters take under a minute
-    and a pair of stages about two and a half minutes, the games left open between runs and
-    every subject's match started in them; a conversion is about eight seconds (the
-    converter's patterns compile once).
-  - donkey kong's jab connects with a fighter standing 150 source units away in the port
-    (195 of its units, the world being scaled) and misses one 150 units away in the source,
-    measured with `hits` on both; the input gate parks the other fighter at 250 so a hit's stop
-    lengthens neither side's move, and which side's boxes differ is open.
-  - the next ten fighters, run the same way: luigi, marth, peach, yoshi, ness, jigglypuff and
-    metaknight pass every gate (yoshi's jab was the second kick until the jab cut read the
-    clip's unlabelled head; ness's thunder poll and jigglypuff's roll end had no timer slot;
-    metaknight's tornado check was decoded with its end test inside the wrong branch, its
-    down special never restored gravity because the special-mode read was struck, and its
-    idle jumped into the walk's `loop` label). bowser walks at his cap now: the source's engine
-    overrides a walk clip's own speed writes every frame (his clip writes 2.0 and 0 while he
-    walks a flat 2.46 there), so a literal x-speed write inside the animations this engine walks
-    is dropped. pichu's down special and captain falcon's down special match now: a clip whose
-    move ends on its LAST frame shows that frame in the source (pichu's 60th of 60), where a
-    move ended mid-clip never shows the frame that ends it (marth's down special's 31st of
-    40), so the port keeps a clip's last frame and runs its ending one frame past it.
-    megaman walks at 4.31 a frame against his 4.42 cap now that an object's own setup runs
-    where the tree put it, and passes every gate.
-  - a third ten: rayman, tails, waluigi, wario, pichu and sora pass every gate (pichu and sora
-    booted into `Unknown variable` errors until the fighter preamble carried the clip-clock and
-    for-each helpers the stage objects already had; pit's only failure was the parity checker
-    counting a source move with no hitbox as missing). the decompiler's chain combiner reads any
-    nesting of `&&`/`||` off the jump targets now: lost conditions across the corpus went from 49
-    to 18, and the 18 left are calls through a name computed at run time
-    (`obj["get" + type + "Stat"](..)`), which it does not read yet. simon passes now too: its
-    whip jab exits once a cancel of a timer nothing set is a miss, and its up special lands by
-    the fighter's own update (DEVELOPMENT §6.1b). megaman passes: his neutral special's own
-    `update` method no longer runs as the fighter's per-frame hook. open: bowser's walk and
-    captain falcon's down special.
-  - a fourth ten: bandanadee, blackmage, falco, isaac, goku and chibirobo pass every gate
-    (goku's six specials each declare a `checkControls`, kept per class now; chibirobo's
-    blaster ended against the animation's name where the source asks the clip's own label).
-    bomberman's held bomb releases now (a fully charged move still lets go into `attack`), and
-    game and watch's release timer starts with its declared default. open, one input each and
-    all of one kind: the up specials of bomberman (48 against 78), dedede (104 against 114),
-    game and watch (75 against 108) and ganondorf (40 against 56, and its down special 38
-    against 64) came down early because the port held their speed where the source only caps
-    it: `air_ease` is a fall cap, and a fighter's script speeds cross unchanged, with one
-    source frame of gravity on a y write (§7 of DEVELOPMENT). ganondorf's, simon's and game
-    and watch's arcs now peak on the source's frame, kirby's up special ends into stand on the
-    ground instead of sinking through the floor, and sandbag's scripted walk stops where the
-    source's does.
-  - the last seven: lucario, luffy, naruto, pacman and zamus pass every gate; krystal's up
-    special (54 against 60, then a fall where the source lands) and lloyd's down special (29
-    against 78) are open, and neither declares an air ease.
-  - the whole roster on both engines, on the same stage: 43 of 45 fighters pass every gate
-    (re-run after the walk rule and the last-frame rule of 2026-09-10: every fighter but marth
-    and sandbag passes all six). sandbag's up special makes a bob-omb and tosses it, and with
-    one already in hand the source blows itself up three frames in (hurt, flying, falling);
-    this engine has no item system, so the port plays the clip through. that is the item gap
-    under "character system gaps", not a timing fault.
-    what stays open is marth (an up special that runs
-    50 against 30 and ends helpless where the source lands: both rise the same height, and
-    the source's platform catches feet 8 px under its surface where this engine's does not,
-    so the source lands on battlefield's top platform and the port falls past it) and wario
-    (a down special whose length is the charge the match has built up: played alone from a
-    stand the two engines match frame for frame, and the gate's runs reach it with different
-    match times behind them, a harness limit).
-  - a speed a script states crosses the boundary now (DEVELOPMENT §7): pikachu's bolt lands on
-    the source's frame, and sandbag's hop walk averages the source's over the same fifteen
-    frames (2.72 a frame against 4.19 scaled, within a percent). the source still starts its
-    walk at three quarters of its cap on the first frame where the port accelerates from
-    nothing; the average hides it and the per-frame record does not.
+  named through the fighter's own map, the conversion read from the installed game's own data
+  when it is present (the corpus copy can be another build: its mario has a 23-frame fireball
+  clip, the game's an 18-frame one). the rules it holds the port to:
+  - a listener for touching the ground hears a landing, a transition, not standing; a grounded
+    attack keeps its animation airborne, and one that hops plays its clip to its end through the
+    landing (`landType` NONE beside `leaveGroundType` NONE: sandbag's up special).
+  - only the timeline's own renames reach frame scripts; a clip's own methods are wired by label,
+    so two clips carrying one method name each reach their own; a helper clip's lead-in frames
+    (before its first label) run on the first frame of the piece that follows; a jump to a label
+    inside the same clip is a frame jump (link's bow to `attack`).
+  - "how long since this move was last used" is a count the script keeps (a single tap does not
+    chain a jab); only a constructor write is a field's initial value, and a helper clip's own
+    fields start at their defaults on its first frame (fox's jab).
+  - a timer the source runs every frame fires once a source frame, under either name the source
+    arms it by (samus's charge shot, donkey kong's punch), and the attack table the fighter reads
+    is in the source's units for the same reason.
+  - a method's jump to a label resolves by the animation playing (inside it when it carries the
+    label, else to the animation the label starts); an attack's own numbers travel with it (fox's
+    reflector reads its charge cap); the terminator trim repeats while the frame then last still
+    ends the move (fox's blaster).
+  - a comparison on a field not yet written answers as the source's undefined does (samus's charge
+    shot); a clip's own frame read as the bare timeline property is read before translation (fox's
+    reflector).
+  - an attack that declares a charge time and no charge handling of its own is charged by the
+    clip's labels (held, it stays in "charging"; let go, it plays "attack"; run to its charge time,
+    "finishedcharge": link's spin attack), inferred from three fighters measured live.
+  - both engines get the same two-fighter roster with the other fighter parked the same distance
+    away (sonic's homing attack); a projectile that states no x speed launches with none, and a slot
+    a clip only reads, declared with a value, starts at it (pikachu's thunder cloud).
+  - a clip whose move ends on its LAST frame shows that frame (pichu's 60th of 60), where a move
+    ended mid-clip never shows the frame that ends it (marth's down special's 31st of 40), so the
+    port keeps a clip's last frame and runs its ending one frame past it.
+  - the source's engine overrides a walk clip's own speed writes every frame (bowser walks a flat
+    2.46 while his clip writes 2.0 and 0), so a literal x-speed write inside the animations this
+    engine walks is dropped; an object's own setup runs where the tree put it (megaman walks 4.31
+    against his 4.42 cap).
+  - the fighter preamble carries the clip-clock and for-each helpers the stage objects have; the
+    decompiler's chain combiner reads any nesting of `&&`/`||` off the jump targets (18 lost
+    conditions remain corpus-wide, all calls through a name computed at run time,
+    `obj["get" + type + "Stat"](..)`); a cancel of a timer nothing set is a miss (simon's whip
+    jab); a class's own `update` method is not the fighter's per-frame hook (megaman's neutral
+    special); every class keeps its own `checkControls` (goku); a clip's end is asked of its own
+    label (chibirobo's blaster); a fully charged move still lets go into `attack` (bomberman), and
+    a release timer starts at its declared default (game and watch).
+  - `air_ease` is a fall cap, and a fighter's script speeds cross the boundary unchanged with one
+    source frame of gravity on a y write (DEVELOPMENT §7): pikachu's bolt lands on the source's
+    frame, and the up specials of ganondorf, simon and game and watch peak on the source's frame.
+  - the walk, held fifteen source frames from a stand, is compared too: sandbag's hop walk
+    averages the source's over those frames (2.72 a frame against 4.19 scaled, within a percent).
+    the source starts its walk at three quarters of its cap on the first frame where the port
+    accelerates from nothing; the average hides it and the per-frame record does not.
+  - pass state: the whole roster on both engines, on the same stage, passes every gate but the
+    items below; all ten sample stages pass every gate, the cross-engine half included.
+  - open: donkey kong's punch keeps charging after a tap where the port lets go; sonic's side
+    special ends in a fall in the port and on a ledge hang in the source; zelda's walk reaches 5.7
+    a tick in the source where her declared figures give 4.0 (2.6 against 3.7 scaled); donkey
+    kong's jab connects at 150 source units in the port and misses there in the source; krystal's
+    up special (54 against 60, then a fall where the source lands) and lloyd's down special (29
+    against 78), neither declaring an air ease; marth's up special (50 against 30, helpless where
+    the source lands: the source's platform catches feet 8 px under its surface); wario's down
+    special, whose length is the charge the match has built up (a harness limit: played alone the
+    two engines match frame for frame).
 - the stage half of the cross-engine gate (S7) pairs each Fraymakers element to its source clip
   by name through the converter's plan, and what that surfaced on the sample:
-  - a nested clip the stage keeps up came out baked over the stage's whole timeline (bowser's
-    castle's 82-frame podoboos as 142-frame elements that restarted with the stage). a clip the
-    stage keeps up loops on its own clock now, its period read off the pictures and decided
-    once per clip from the slots that show something.
+  - a nested clip the stage keeps up loops on its own clock (bowser's castle's 82-frame
+    podoboos), its period read off the pictures and decided once per clip from the slots that
+    show something, not baked over the stage's whole timeline.
   - three stages drive every plane across section labels from their own code (castle siege,
     mushroom kingdom, galaxy tours: `getMidground().playFrameLabel("transition1")` and the
-    like), and the port played each plane's timeline end to end with the jumps struck. a
-    label-bearing plane clip is a state machine now: the track builder hands its timeline
+    like). a label-bearing plane clip is a state machine: the track builder hands its timeline
     over as label-delimited segments, each an animation its group answers to by name; the
     stage's painted art carries the terrain clip's labels as frame labels; and a jump the
     stage makes on its midground or its mask fans out to every plane group and to the stage's
     own animation. what a section changes in the COLLISION is the stage class's own doing
     (the named terrain platforms it shows and hides), and stays as ported.
   - a section HOLDS. a plane's clip stops itself on a section's first frame (`stop()`, or a
-    `gotoAndStop` onto the label) and waits for the stage's code to play the transition; read
-    as a loop, every plane cycled through all twelve sections on its own and the stage
-    flickered between its art and nothing. a segment ends at the first scripted frame inside
+    `gotoAndStop` onto the label) and waits for the stage's code to play the transition. a
+    segment ends at the first scripted frame inside
     it, a stop holds its last frame, a `gotoAndStop` target keeps one frame, and a segment only
     the stage's code reaches by name is still reachable. the stage's jump is left with each
     piece (`exports.__go`) and taken up by the piece's own script, which owns its place.
   - a piece of the terrain slot is never drawn. every clip placed there hides itself on its
     first frame (its class says so), and a clip that starts hidden and that no code ever shows
-    is not art: painted in, castle siege's terrain sections sat over the castle in the
-    collision grey, and moved with the transitions as objects of their own.
+    is not art (castle siege's terrain sections would sit over the castle in the collision grey).
   - a camera background whose timeline is a state machine (castle siege's sky) is objects in
     the engine's own containers for it: each piece gets a blank camera-background entry of the
     plate's size and its declared rate, and its object is parented into
@@ -1447,22 +1297,18 @@ still open, and what decides each:
     from the entry's centre. the engine places and pans it with the plate; the piece's script
     switches its section. the tree's own copy of a declared background is dropped (the game
     makes a camera background from the library, never from the placement).
-  - an SSF2 session opened on a stage alone used to auto-launch with the other engine's
-    default fighter, which SSF2 does not have: the stage drew and its class never ran (no
-    stage data, no timers, no hazards), and a match after it on the same engine never
-    started either. an SSF2 session takes SSF2's own default fighter now. castle siege moves
-    top to middle at thirty seconds on both engines, and bomb factory spawns its blocks on
-    both.
+  - an SSF2 session opened on a stage alone takes SSF2's own default fighter (the other
+    engine's default does not exist there, and without a fighter the stage's class never runs).
+    castle siege moves top to middle at thirty seconds on both engines, and bomb factory spawns
+    its blocks on both.
   - a hazard state the source enters without starting a clip (the thwomp's fall and rise)
     is registered under the clip that carries on and entered through the engine's value-only
-    setter. left out of the registry to keep the clip playing, the engine refused the move and
-    the thwomp fell onto the floor still in its entrance state.
-  - a stage class's per-update counters were written for thirty frames a second and the port
-    called its update sixty times a second (castle siege moved through its sections in half
-    the time); the source's update now runs every other frame.
+    setter (out of the registry, the engine refuses the move).
+  - a stage class's update runs every other engine frame, as its per-update counters are written
+    for thirty frames a second (castle siege moves through its sections at the source's pace).
   - clips the source places at no opacity (bowser's castle's sixteen ember emitters) are
-    placeholders the stage's code reads positions off; the SSF2 tree states opacity now and
-    the checker leaves them out. a fighter's pose clip and a stage-root child of the game's
+    placeholders the stage's code reads positions off; the SSF2 tree states opacity and the
+    checker leaves them out. a fighter's pose clip and a stage-root child of the game's
     own are left out the same way.
   - an object the package declares that the port defers (clocktown's fairy is an item, and
     there is no item system to port onto) is named in the plan, and the checker reports it as
@@ -1488,16 +1334,14 @@ its own code ends early is left to that gate to rule on.
 
 ---
 
-## nested clips as vfx (branch `stage-vfx-containers`)
+## nested clips as vfx
 
 a nested movieclip is two things at once: it loops on its own few frames, and the stage's timeline
-places it for a stretch and takes it away. today those are folded together and both come out wrong.
-carrying the stage's timeline inside the object loses the loop (clocktown's 28-frame rain splash
-becomes a one-shot as long as the day, shown once instead of the 265 times the source plays it);
-keeping only the loop loses the placement, and it plays through the hours the stage never shows it.
-
-the shape being tried: one vfx per nested clip, added to the container the clip hung off, looping
-forever, with the stage timeline's handling of it translated into code that moves and removes it.
+places it for a stretch and takes it away. carrying the stage's timeline inside the object would
+lose the loop (clocktown's 28-frame rain splash plays 265 times a day in the source); keeping only
+the loop would lose the placement. so each nested clip is one vfx, added to the container the clip
+hung off, looping forever, with the stage timeline's handling of it translated into code that moves
+and removes it.
 
 what the engine gives us, measured live:
 
@@ -1517,20 +1361,15 @@ so the shape is supported end to end: make a container, add it where the clip hu
 in it, and move, hide or drop the container. measured with a probe holding art the stage has nowhere
 else: 176-198 px of it on screen with the parent shown, 0 with the parent hidden.
 
-every backdrop object now lives in a container of its own, which is the substrate the rest needs.
-the schedule comes from the SOURCE: which frames of the stage's timeline PLACE the clip, read off
-the timeline rather than guessed from what got rasterised. inferring it from the baked frames --
-treating a blank frame as "the stage is not showing this" -- broke the clock twice, because a blank
-frame means two different things: the stage has taken the clip away, and the clip's own cel is empty
-right now.
+every backdrop object lives in a container of its own. the schedule comes from the SOURCE: which
+frames of the stage's timeline PLACE the clip, read off the timeline rather than guessed from what
+got rasterised, since a blank baked frame means two different things: the stage has taken the clip
+away, or the clip's own cel is empty right now.
 
 the placement list alone is not the schedule either. a piece inside a nested clip is placed on its
-OWN cycling timeline, so sampling it against the whole stage leaves a couple of frames on, a couple
-off, all day -- clocktown's four scheduled objects came out with 797, 611, 549 and 468 runs apiece.
-switching an object at that rate is the clip's animation read as if the stage meant it, and it costs
-the object its motion too, since it is only ever up for a blink: torches that flicker, splashes
-frozen on one cel. so an absence shorter than `REAL_GAP` (60 sampled frames) closes up and stays
-inside the object. the four come out at one run each, spanning the day.
+OWN cycling timeline, so sampling it against the whole stage turns the clip's animation into
+hundreds of on/off switches; an absence shorter than `REAL_GAP` (60 sampled frames) closes up and
+stays inside the object. clocktown's four scheduled objects are one run each, spanning the day.
 
 masks: no SWF stage in the corpus uses `clip_depth`, the only thing in the format that marks one --
 measured across the sample, zero mask tags. so foreground occlusion cannot come from a mask in the
@@ -1601,7 +1440,7 @@ one in the emitted script (a declaration method like `getOwnStats` is read at co
 becomes the object's stats rather than a function). across the ten sample stages that comes out at
 zero missing, stage classes and hazard classes alike.
 
-what is left is per-LINE, and each struck line now carries the reason it was struck, so an audit
+what is left is per-LINE, and each struck line carries the reason it was struck, so an audit
 reads as decisions rather than holes. what remains on the ten:
 
 | left out | why |
@@ -1650,36 +1489,30 @@ loaded (crystal smash's crystals, with their eighty animations).
 against what was emitted; `tools/tests/sweep-stages-inventory.sh` does the whole corpus at once.
 1,286 objects ported, 2 animations lost across 2 stages, 108 of 110 stages clean.
 
-| | was | now |
-|---|---|---|
-| stages that convert | 107/110 | 110/110 |
-| animations lost | 168 | 2 |
-| stages with nothing lost | 45 | 108 |
-| plane/layer errors | 11 | 0 |
+| | |
+|---|---|
+| stages that convert | 110/110 |
+| animations lost | 2 |
+| stages with nothing lost | 108 |
+| plane/layer errors | 0 |
 
-**what draws in front of what.** Zero across the roster. The eleven flagged before were every one
-a ported platform sitting in a structures container, which is where a structure goes whatever
-plane the source drew it on, not a claim about depth.
+**what draws in front of what.** Zero across the roster. A ported platform sits in a structures
+container whatever plane the source drew it on, which is not a claim about depth.
 
-three converter fixes moved most of that, and the rest was the check being wrong:
+the rules behind those numbers:
 
-- **three stages had no ground at all.** a platform that becomes a structure carries its own
-  collision and is skipped in the stage entity, but the skip also caught any platform the stage's
-  code merely NAMES, and nothing emits a structure for those. the engine refuses a stage with no
-  floor, so galaxytours, urbanchampion and warioware were refused outright. naming is not driving.
-- **a stage places objects in its terrain container, not only collision.** the container was
-  excluded whole, and the collision pieces in it already say what they are in their own linkage,
-  which the filter beside it already reads. everything else placed there went with them: rainbow
-  route's mirrors, the palace's pillars, a target test's targets.
-- **an element on the stage's own plane keeps its own loop.** the plane is painted as one picture
-  and a picture carries one timeline, so an element on it only went on moving when everything
-  around it moved in step.
-- **the check blamed the wrong objects.** it paired one at a time, so an early object took an
-  element an exact match later needed; it counted a long clip whose art never changes as a lost
-  animation; it could not pair a clip ported as an OBJECT, since a hazard entity is named for its
-  class while the source knows it by the clip it draws with; and it let a `stance` -- an object's
-  own art -- compete with the object it belongs to. roughly two thirds of the original 168 were
-  never losses at all.
+- **a platform the stage's code merely NAMES still gets its ground.** a platform that becomes a
+  structure carries its own collision and is skipped in the stage entity; one the code only names
+  is not skipped, since the engine refuses a stage with no floor (galaxytours, urbanchampion,
+  warioware). naming is not driving.
+- **a stage places objects in its terrain container, not only collision.** the collision pieces
+  there say what they are in their own linkage; everything else placed there ports (rainbow
+  route's mirrors, the palace's pillars, a target test's targets).
+- **an element on the stage's own plane keeps its own loop**, rather than moving only when
+  everything around it on the painted plane moves in step.
+- **the inventory check pairs the whole set at once**, counts a long clip whose art never changes
+  as still, pairs a clip ported as an OBJECT by the clip it draws with, and does not let a
+  `stance` (an object's own art) compete with the object it belongs to.
 
 what is left is two, both understood. emerald cave's embers are a burst of particles each alive
 for a frame, so read as objects they are correct objects that each hold still, and the movement
@@ -1691,32 +1524,29 @@ other hundred and nine.
 two checks answer the whole corpus at once, and both are clean:
 
 - `tools/check-emitted.py <dir>` reads every emitted script for what the engine would refuse to
-  parse. 33 of them once, then 9, now none. the engine drops a script it cannot parse WHOLE, so
-  each one cost a stage every object it was going to make -- for a bracket, twice over.
+  parse: none. the engine drops a script it cannot parse WHOLE, so one would cost a stage every
+  object it was going to make.
 - `tools/tests/unanswerable-calls.py <dir>` lists every call to a name neither this engine nor
-  the script itself has. twenty names across fourteen stages once, now none. such a call does not
-  fail quietly: it takes the rest of the frame with it, every frame.
+  the script itself has: none. such a call takes the rest of the frame with it, every frame.
 
-both were written after driving stages one at a time proved too slow to be honest about -- an
-hour a sweep, against a binary that kept changing under it. the scripts already say which names
-they use, so the whole corpus can be asked at once, and the answer ranks causes by how many
-stages each affects.
+the scripts already say which names they use, so the whole corpus is asked at once, and the
+answer ranks causes by how many stages each affects.
 
 ### a stage's objects, and the scope its methods run in
 
-Six things kept objects a stage spawns from running at all, every one of them silent:
+Rules that keep the objects a stage spawns running, each of which would otherwise fail silently:
 
-- a timer built INSIDE another call swallowed that call's closing paren, and a struck multi-line
-  call left its tail behind. both leave a script the engine cannot parse, and it drops such a
-  script WHOLE, so the stage lost every object that script was going to spawn.
-- the source's api object READ on its own (`_v1 = SSF2API;`) threw, taking the handler with it.
-- an AS3 cast read as a call: `MovieClip(x)`, and `EmeraldCaveWoodenPanel(x)` for the stage's own
-  classes. the class graph names those, so there is no list to keep.
-- an object's own methods were asked of the ENGINE's handle rather than of what the object
-  publishes, so configuring it was refused and the rest of the stage's setup went with it.
-- a field that holds TEXT, or whatever a caller hands it, was given a number store, which refuses
-  the value outright. emerald cave's panel keeps which side of the frame it is in one of those.
-- a line built on a temp whose assignment was struck threw every frame.
+- a timer built INSIDE another call keeps that call's closing paren, and a struck multi-line call
+  takes its tail with it: the engine drops a script it cannot parse WHOLE, and the stage would
+  lose every object that script spawns.
+- the source's api object read on its own (`_v1 = SSF2API;`) is not a value that throws.
+- an AS3 cast is a cast, not a call: `MovieClip(x)`, and `EmeraldCaveWoodenPanel(x)` for the
+  stage's own classes. the class graph names those, so there is no list to keep.
+- an object's own methods are asked of what the object publishes, not of the ENGINE's handle,
+  which refuses them.
+- a field that holds TEXT, or whatever a caller hands it, gets an any-value store, not a number
+  store (emerald cave's panel keeps which side of the frame it is in one of those).
+- a line built on a temp whose assignment was struck is struck with it.
 
 **and one thing that is the engine's, not ours.** A function invoked through another script's
 exports runs WITHOUT the engine helpers its own script has. Fourside's spaceship calls
@@ -1726,9 +1556,8 @@ patching the emitted script and re-exporting. So a state change driven from outs
 call: the object has to be signalled and change state in its own update, where its scope is whole.
 
 Worth knowing when reading these numbers: an object that cannot be configured reports NO errors,
-because it never runs. Fourside read clean while its spaceship sat inert, and reads as two errors
-now that the stage can reach it. Routing an object's methods through its exports is what changed
-that, and it is the same change that got emerald cave's panel working.
+because it never runs, so a clean error channel is not proof an object runs. Fourside's
+spaceship, reached through its exports, reports two errors.
 
 ### a backdrop is objects, not pictures
 
@@ -1742,26 +1571,25 @@ full-width copies of the pair.
 | castle siege | 957MB, 720 pictures | 12MB, all 720 frames |
 | dream land | 121MB, 1512 pictures | 4.4MB, all 1512 frames |
 
-Neither can be published at the composited size: FrayTools never finishes, the engine keeps
-whichever package was installed before, and the stage is not in the game at all. Both now publish
-and run with every element live.
+Neither can be published at the composited size (FrayTools never finishes); as objects, both
+publish and run with every element live.
 
 Nothing is sampled, dropped or quantised. It is the same art, and the frame count and cycle length
-are unchanged -- only where the motion is kept. The timeline walk already did this for a backdrop
-the placement TREE puts down; one the package NAMES never reached that walk and was composited.
+are unchanged -- only where the motion is kept. A backdrop the package NAMES is carried the same
+way as one the placement TREE puts down.
 
 It applies where a backdrop is more than one object. A backdrop that is a single object is the
 same picture either way.
 
 ### every stage, run
 
-All 110 were driven, not just the sample: converted, published, and run with a stock fighter
-walking, jumping and attacking over each one, then left to tick while the error channel was read.
+All 110 are driven, not just the sample: converted, published, and run with a stock fighter
+walking, jumping and attacking over each one, then left to tick while the error channel is read.
 Every one of them comes back with nothing on it.
 
-That took 68 fixes, and almost none of them were about a stage. The shapes that kept turning up:
+Almost none of what that needed was about a stage. The shapes the converter guards against:
 
-| what it was | what it cost |
+| shape | what it would cost |
 |---|---|
 | a script the engine could not parse | the whole script, and every object it makes, silently |
 | an instruction the decompiler had no reading for | every read after it, one thing to the left |
@@ -1771,8 +1599,8 @@ That took 68 fixes, and almost none of them were about a stage. The shapes that 
 
 The parse failures are the ones worth naming, because they are invisible: the engine drops a
 script it cannot parse WHOLE, and the first symptom is a frame reporting an unknown variable for
-a name that is right there in the file. Nine stages lost a script that way, each to a single
-character. `just sweep-stages` now reads what it emitted and refuses the shapes that do it -- a
+a name that is right there in the file. `just sweep-stages` reads what it emitted and refuses
+the shapes that do it -- a
 close with nothing open for it, a block that never closes, an index reached through a dot, a
 number run into what precedes it, a statement whose brackets do not close on it.
 
@@ -1786,9 +1614,9 @@ Both are content that did not come across rather than code that does not run: th
 All ten convert (`just sweep-stages`) and RUN with no script errors: `just sweep-stages-live`
 runs the verify gates on each one, a stock fighter walking, jumping and attacking over it, and
 reads the error channel. Stock, because a converted fighter's own
-errors look exactly like a stage regression. Converting clean says nothing on its own -- three of
-the ten converted clean and then asked the engine for an animation the object has not got, once
-per entry, as soon as their scripts started ticking.
+errors look exactly like a stage regression. Converting clean says nothing on its own: a stage can
+convert clean and then ask the engine for an animation the object has not got, once per entry, as
+soon as its scripts start ticking.
 
 Each was also compared against SSF2 running the same stage at the same framing. One difference is
 left, and it is the engine's rather than the conversion's:
@@ -1796,7 +1624,7 @@ left, and it is the engine's rather than the conversion's:
 | stage | state |
 |---|---|
 | battlefield | matches |
-| battlefield2 | matches (its backdrop is stored as JPEG with shared tables, and read as standalone JPEGs it came out a black void) |
+| battlefield2 | matches (its backdrop is stored as JPEG with shared tables, and read that way) |
 | bombfactory | matches: blocks, bombs and the cross blast all run, and block bodies are recycled rather than piling up |
 | butterbuilding | its layout table drives its platforms (each is its own structure, filed under the name the stage reaches it by). Its tower does not rise, and cannot yet: the stage walks its camera box and blast zone upward every frame, and Fraymakers exposes a collision area's SIZE but not its position (asked to move one it answers "Invalid collision area stat") |
 | bowserscastle | matches: thwomp and lava run, its deck opens on the way down and closes on landing, it lands with a sound, and its two bridges come from its own ledge beacons rather than a table of coordinates |
@@ -1880,95 +1708,11 @@ multiplier), so the declared body goes in unscaled, or it would be applied twice
 
 ## what playing a port turned up that the gates did not
 
-the gates play each attack alone into empty air and read names, lengths and positions. looking at
-frames and playing everything else (tools listed in TESTING.md) found, all roster-wide and now
-fixed:
+the gates play each attack alone into empty air and read names, lengths and positions, so a port
+is also looked at frame by frame and played outside the attacks (tools listed in TESTING.md).
+what that leaves open:
 
-| what a player saw | cause |
-|---|---|
-| every port's default costume wore the art's base colours (mario in a green cap) | the installed game keeps its costume table in a numbered DAT archive, never read |
-| attack swings, grabs, landings silent or a stand-in whoosh | the shared sound bank was only found when an environment variable named the game |
-| air dodge flew the fighter off the stage, and dodged nothing | this engine's airdash is a one-frame blink; the source's air dodge stays put |
-| four fighters' throws stopped mid-move (kirby's up throw) | a camera target handed over as a view container, which the engine refuses |
-| ten fighters' taunt button did nothing | the emote slot borrowed an empty or one-frame up taunt |
-| hits stuck to the attacker a frame or more too long | half of all moves state no attacker freeze, and the engine's default is not the source's |
-| a class's `== null` checks never passed (isaac's vine caught nobody, then threw every frame) | a field declared `= null`, `= true` or `= false` was read as 0 or 1 |
-| bomberman's neutral special lost every bomb he had out | a field a move's clip declares shared the fighter's field of the same name |
-| landing, timers and hit handlers threw or took the engine down (falcon, link, pac-man) | a handler named after one of the source engine's methods read back nothing |
-| megaman's wave, bowser's fire breath and lucario's aura trail did nothing | a fire by a worked-out name, a projectile firing its own kind, a flag a projectile's frame writes on its summoner |
-| a spent projectile sat in its dying animation for the rest of the match | a dying animation guessed from the last label can repeat; dying is now bounded |
-| a projectile that stopped (pichu's thunder on the ground) stayed out for the match | a projectile that states no lifetime has the source's default one, and a lifetime set while it runs is kept |
-| a projectile's code asked for fighter-only things (samus's bomb went dead after its first hit) | the call table reads a fighter's meaning; projectile code now translates in a projectile scope |
-| calls on another object the port has no name for stopped their handler (yoshi's egg, naruto's voice clips, pichu's projectiles) | such a call goes through what the object publishes, and does nothing when it publishes nothing |
-| megaman's landing handler became `true` | a field a move's clip writes shared the name of one of the fighter's functions |
-| hitbox stats built in a variable were refused whole (lucario's aura sphere, wario's fart) | stats handed over as a value are converted when applied, from the same tables |
-| marth's, peach's, dedede's and chibirobo's counters got them hit; ness's and game & watch's absorbs were counters | a box the parser did not know by name was read as a hurtbox (the source's counter box among them, and its camera and range boxes); the absorb box was emitted as a counter box |
-| a projectile's "when I am destroyed" code never ran (megaman could throw one crash bomb), and listeners on the other fighter vanished when it was hit | the asks ran from an update that stops at death; this engine drops a listener that does not ask to persist on the object's next state change |
-| code that asked about the stage (its bounds) never ran, and a projectile leaving the stage never ran its own end (megaman threw one crash bomb, ever) | the stage was asked of the match, which has no such method (every script has it as the global `stage`); the engine took a projectile off at the death bounds with nothing of its own run first |
-| black mage's air down special took the engine down with no error | a fighter read its frame within the piece of the clip it was cut into, not over the whole clip as the source does; a jump "a few frames on" landed on the move's own start and recursed |
-| fox's reflector let every shot through, and shots it should turn back flew on | this engine knows a box by its layer's name as well as its type, and the reflect box kept the source's name; a projectile that states nothing about being reversible is reversible in the source and was not here |
-| ness's magnet ended at its first check however long special was held | the source's engine answers a held or pressed button on an attack that declares `combo_max` by telling the clip to go on; nothing here did (24 fighters declare it) |
-| ness's and game & watch's absorb handlers threw ending the absorbed shot | the projectile an absorb takes arrives as the event's foe |
-| a projectile another script ended (an absorb, black mage putting his away) skipped its own end: what it asked to be told of its end never heard | ending another object killed it outright; a converted projectile is now asked, and ends itself the way it does at the death bounds |
-| falco's side special took the engine down (a crash with no error) | the helper that keeps a projectile's listeners on other objects was itself rewritten into one of those listeners, and called itself forever; every projectile that listens on its fighter hit it |
-| a projectile jumping to one of its own labels asked the engine for a frame label its entity does not carry | a projectile's labels are its animations, so the jump plays the animation (from its own first frame it is already there) |
-| moves the source makes invincible or armored (ryu's focus attack, donkey kong's spin, every final smash) could be hit and made to flinch | an attack's declared `invincible` and `superArmor`, and its own writes of them, were never applied; they are now held for the whole attack as the source does (`heavyArmor`, a threshold under which damage is still taken, has no counterpart here) |
-| mario threw one fireball standing and never another until he jumped (29 fighters declare the same kind of cooldown) | an attack turned off with no count of frames comes back after the `reenableTimer` it declares; here it stayed off until the fighter next landed |
-| specials the source lets the fighter steer (mario's tornado, 84 specials in all) could not be steered | an attack's declared `allowControl` (in the air, and on the ground unless `allowControlGround` is off) was never applied, and this engine gives a special no control of its own; it is now, and the attack's writes switch it |
-| an aerial that stalls or lifts its fighter when it connects (pikachu's forward air, 11 in all) fell on as if it missed | an attack's `hit_ease`, the cap on vertical speed for five source frames after it connects, was never applied |
-| mario's fireball fired in the air landed into its landing lag instead of carrying on | an attack that declares `linkFrames` switches between its ground and air versions at the same frame; the pair now link through the engine's own leave and land types |
-| an attack's sound played on after the attack was cut short | an attack that declares `cancelSoundOnEnd` / `cancelVoiceOnEnd` stops its last sound / voice when it ends |
-| sonic's running feet never blurred (85 frame lines struck) | a frame line on one of the fighter's parts was restored only when it asked nothing else, and these asked one of sonic's own functions |
-| a projectile ended by its code played one of its own labels as it died, running that label's code (lucario's aura sphere "died" in the label that fires it and flew on; 84 projectiles died in `chibi`) | a clip that never says it dies in a label now dies in a still frame with nothing to run, as the source's end takes it off at once |
-| pac-man's trampoline and dedede's inhale threw on an event's sender and on steering set through a helper | the event's sender is its `self` here; a steering write through another receiver goes to the engine's own field |
-| bomb factory made no blocks and bowser's castle lost half its hazards (the engine refused them) | a stage's spawn by class was read as a fighter's projectile fire, owned by the stage; a stage's and its objects' spawns are the stage emitter's again, made as its own objects |
-| once spawned, bomb factory's blocks and bowser's castle's thwomp threw on their clip length, a stopped sound and every call to their stage | an object's script reads its clip length on the clock it reads its frame on, carries the sound helpers it uses, and reaches its stage through the handle the stage gives it rather than the engine's stage |
-| multi-hit moves that pull their victim along (sonic's up tilt, game & watch, ganondorf, ryu, tails) let it drop out | the pull is a helper the fighter inherits from a base class its own file ships; the base methods the fighter's code reaches are translated with it (never the engine's surface the package declares, whose methods only hand calls on), and the handler's string slice, named states and stat names cross over |
-| a held grab, a fighter lying down, a held shield replayed their poses from the start (101 held frames across the roster) | the source's own `stop()` on a fighter's clip holds the animation where it is through the animation's pause, which lets go when the next one starts |
-| peach's float never sparkled; pac-man's point and trail effects never showed | an effect named by something put together as it runs (`"peach_float_sparkles" + random`) was struck; it is looked up among the fighter's own effects when it runs, placed and scaled as a named one is, from the fighter's frames and its projectiles (pit's arrows, the dice) as much as its script |
-| link's shield would have turned shots back | the source's shield boxes block (a projectile's shield box ends it; a fighter's shield box is shield damage), and were typed as reflect boxes |
-| link's forward smash never swung its second slash | an attack that charges and also declares `combo_max` answers its button once it is attacking (from its `attack` label, which the fighter's own `xframe` names); it was left out of the combo protocol altogether |
-| a move's cleanup never ran when it was interrupted or ended (effects lingered, listeners and timers the move set stayed) | the source's state change was read as this engine's ground/air link frames, which only fire at a landing or a jump; it is this engine's state change now, and the listener persists until the code takes it off (a listener that does not persist is dropped AT the state change, before it can hear it) |
-| effects a move put on its fighter's list played on after the move was cut short | the list was dropped (`addEffectToList` unwrapped, `removeAllEffects` and `clearEffectsOnStateChange` struck); the fighter's own methods run now, from its class or the base its package ships, and an effect taken off the display list is ended |
-| a grabbing fighter drew on the wrong side of the one it held; the held one never took the pose a throw asks for | the draw-order call is the fighter in front of (true) or behind (false) the one it holds; a pose asked by label is asked of the held fighter's script, and does nothing when its clip has no such label, as in the source |
-| an effect pushed behind its fighter stayed in front | trading places with the fighter in the draw order is the engine's own swap |
-| link's boomerang flew off forever and was never caught | four things, each general: a projectile starts in the label at its first frame (a label replaying itself further in is no start); a timer the source starts lasts until its object's state changes, not until its clip moves to the next label (this engine drops one at every animation change, and a clip's labels are separate animations here); a fighter's own id (`statsName`) is published and read, where it read as nothing; and a projectile asking the one it belongs to for one of the fighter's moves plays that move there, from the label or frame it names |
-| the watch for a projectile touching something (the source's collide event) stopped at its first label change, and could not be taken off | it lasts until the code takes it off, and its handler sees the object it belongs to as `self` |
-| meta knight's orange trail and dedede's second hammer never showed or hid (40 lines struck) | a clip's named children were read one per depth, and a later frame that puts another child at a depth an earlier one held was missed; every placement is read now (meta knight gained twelve trail parts), and a slot only ever set back to nothing is not one the code fills |
-| a colour adjustment or a fade the source sets on a fighter or its projectile (evil ryu's fireball, a timed-out fade) was struck | hue, saturation, brightness and contrast are the engine's colour filter (its values are fractions of the source's -100..100), a fade is the alpha, and clearing takes both off; a setting that also multiplies or offsets the channels stays struck, since half of it would draw another colour |
-| samus's and dedede's missiles never went on to their `continue` when they slowed | a call a table marks as having no counterpart, to a function the projectile (or the fighter, from a frame) defines itself, is that function; projectile scripts and their frames are restored the way the fighter's script is |
-| pikachu's thunder jolt rose in a straight line and never bounced; luigi's fireball ran every frame script twice; kirby's afterimage and peach's peaches ran a frame of a clip the source never places in them; rayman's vortex and sora's strike raid lacked their stance's own frames | a projectile's code is its own clip's class and its stance's, which the timeline binds; it was also read from any class sharing the name the fighter's table fires it by (pikachu's `thunderJolt` is a ten-frame clip of another jolt's steering, and the jolt fired under that name is `thunderJolt2`), and the two clips' frames ran together |
-| a projectile spawned by a fighter's own code started after its launch was set, so its own first-frame code could not change it (link's arrow flew at its uncharged speed however long the bow was drawn); a spawn hidden behind the launch's lines was not read as a projectile holder (pac-man's hydrant threw on every setting) | the launch is worked out first and left on the owner, the projectile takes it up before its own code runs, and what is left is given after; the holder read reaches past the launch's lines |
-| a projectile with no death of its own sat a second in its still frame after its end (mario's fireball 72 frames against the source's 39) | a death is over when its last frame has played or as many frames have passed as it has |
-| every shot was spawned from a height the fighter's art lifts to in its pose (link's arrow 100 px up where the source fires it 31) | a shot leaves from the fighter's own position plus its stated offset, as measured on the source's per-frame record |
-| falco's laser and megaman's buster and crash bomb left 14, 7 and 8 px too low | a shot fired with an offset of its own leaves at that offset on top of the one its projectile declares, as the source's record measures it (falco's laser fired at (0, -10) with -14 declared leaves at -24) |
-| ness's pk flash charged, was let go, and never fired (the fighter went to his stand; the flash lived 75 frames against the source's 35) | a charge special's base piece names the piece its clip plays on into (`on`), and a fighter whose clip is still playing at that piece's last frame goes there; held, the move's own loop-back keeps it in the charge. a projectile's animation clip plays on whatever a stop on it says, as a fighter's does, so the flash sent to `boom` with a gotoAndStop plays its blast out to the frame that ends it |
-| pit's back orbitar never ended and stayed out until the move did (19 frames against the source's 10) | a jump another object's code makes on a clip (pit sending his orbitars to `end`) is taken up before that clip's next keyframe runs, and the keyframe it was about to enter is skipped; it used to drag the clip back to that frame and replay its script |
-| a jump to a label on another object's clip from a projectile's or a stage object's script was left unanswered (pac-man's dots, ness's flash sending ness on); one from a fighter to one of its own parts was struck as a call on nothing | only the fighter's script resolves labels against its own table; a projectile or stage object asks the entity through its exports, and a part is a name the fighter's own helpers may be handed |
-| samus's missile burst 26 source frames early (33 against the source's 59): its class hands its measured, decaying speed back as its homing speed every other frame, and the write was dropped as a stat this engine has no field for | a stat the projectile's script keeps for the engine (its homing speed and ease, its x decay, its lifetime) takes a runtime write through `__setStat`, from its own code or through its exports from whoever holds it; the keys are the projectile table's `handled_in_script` |
-| a speed read back, kept in a local and written again shrank by the velocity scale each time (ness's rocket bounced at two thirds of its speed; simon's cross was patched for one shape of it) | scripts speak the source's units end to end: the decompiler leaves every speed as written and the boundary helpers convert both ways (`__sv` on a write, `__isv` on a read), so a comparison against a source number holds too; the four fighters the old measurement was taken on (ganondorf, simon, game and watch, mario) pass their gates unchanged |
-| a handler a projectile put on its owner ran on after the engine took the projectile off (bomberman's held bomb, once a knockout removed it: an unknown `self` on the owner's every state change for the rest of the match) | a listener put on another object goes on wrapped, and the wrapper takes itself off the first time it finds its own script gone; a removal by the source's own call goes through the same record |
-| every timer the source starts fired a source frame late here (samus's missile took its launch speed as its homing speed a frame after the drive had imposed the declared one, and flew two units slow for its whole life) | the source's timer of N frames runs before the update of its Nth frame; this engine's runs after an update, one frame sooner when booked during a frame's update or scripts than from a callback (measured). so a source timer is a record on a due list each script's update drains first: booked from a script its first hop is one engine frame short of the doubled delay, at spawn two (the object's first update is still to come that frame), and each fire books the next a whole period on from inside the drain; removals go through the record, whichever hop is booked. one timer per callback, as the source keeps them: a frame that starts its timer again each time it plays replaces the running one (link's boomerang slowed twice as fast with two) |
-| a homing shot dived under the engine's gravity, turned twice as fast as the source's, chased a fighter the source passes over, and slowed at half the source's rate (samus's missile) | the drive owns the velocity (gravity off under it), keeps its heading as its own state, halves the ease's share per engine frame, passes over a fighter that is intangible or invincible, and takes the decay on its driven magnitude |
-| the source's frames retune a trail as the shot flies (samus's missile drops one every 5, then 8, then 16 frames, and none once spent); the writes were dropped | the trail's interval and its effect (null ends it) are runtime setters like the other script-kept stats |
-| megaman's buster flew through a fighter dealing nothing, then hit four times and flew on | a projectile's hitbox stats go on every animation it has (the source's attack belongs to the projectile, and its timeline places the boxes: the buster's box sits in its `loop`, which had an empty entry); an object's own listener lasts until its code takes it off, as the source's does (the buster listened for its hit in its first animation and this engine dropped the listener at its second) |
-| megaman's buster dealt 3 a hit where the source's uncharged shot deals 1: its class lowers the damage as the shot flies, and the writes were made in its first animation and gone in its second (and at every replay of a looping one, which puts the declared stats back) | a projectile's hitbox writes are kept and put back every update, so its box is one box across its animations as the source's is (`__hbCarry`); `PEPTIDE_DUMP_PROJ_STATS=1` prints the boxes the parser read for each projectile |
-| a clip that ends its move on its last frame showed that frame here (simon's jab ran 31 engine frames against the source's 28) | the frame whose script ends the move is never drawn on the source, its clip's last frame included: measured on the source's own per-frame record (pichu's down special shows its 59th of 60, simon's jab its 24th of 25; an earlier reading had the last frame shown, off the wrong column of the record), so the trim takes the last frame too. the end call itself still runs, joined to the last shown frame's script (the source runs it before drawing the frame it sits on, right after the previous frame has shown; here a frame's script runs after the frame has shown), since a move whose animation merely runs out is ended by this engine its own way. a clip of ONE frame that ends the move on it (an air special the source refuses) keeps its end one frame past: ending a state on the first frame this engine has entered it took the engine down natively (donkey kong's aerial down special, a signal 11 with no script error) |
-| donkey kong's forward throw read its state table by a variable and the engine refused the string as an index | a collection the fighter's frames index by name marks the receiver for the script too (the frames were the only place the name was written down) |
-| a label asked of another object was taken up on this engine's next frame, half the source's (megaman's water wave spawned a segment every five engine frames against the source's six) | the ask is taken on the receiver's next source frame: on the second engine frame of its current pair, the next frame drawn begins one |
-| ness's thunder went right, struck the other fighter and died at 53 frames against the source's 69 (it had passed through harmlessly while its flight carried no box) | a shot the owner aims with the stick starts on the direction its declaration states (90, up), the launch being the magnitude along it |
-| ness's fire sank at a constant rate and died on the floor at 8 frames against the source's 12 | a speed written into ANOTHER object crosses plainly: the step of gravity the fighter's own y writes take (the source's engine adds one before it moves) and the floor hold are the fighter's body's; and a projectile the source gives no gravity, or 0, has it written at start, since a 0 in the stats file reads as unset here |
-| a carried hitbox write put back every update cleared the box's record of what it had hit (ness's thunder and fire struck again and died) | it goes back at a change of animation or a restart only |
-| megaman's water wave never stopped (its segments lived 88 frames against the source's 40): every segment reset the wave's count | a clip's first frame's script runs at the projectile's first update unless a label was asked at the spawn, as the source's playhead reaches such a label before frame 1 (this engine ran it the moment the object was made, and folded into `initialize` it ran for every segment); and a jump to the label the first animation is named for lands on that label's frame inside it, since the first animation carries the clip's lead-in frames (replayed from frame 1, the wave ran frame 1's script every cycle) |
-| pac-man's hydrant threw on turning its second water shot round, and the shot itself did not exist (a name a spawned class fires from its own table was never resolved to a clip) | a thing turned to face the other way is turned by the way it faces (a projectile here has no `flip` of its own); what a spawned class's own code fires is resolved to its clip the way the fighter's fires are |
-| game & watch's bacon threw every time it landed | a timer taken off by a function whose name says `timer` (`timerDone`) was read as taken off by its number; a function the script defines is taken off as one |
-| an engine method handed to a timer (`refreshAttackID`) was nothing to call, and took the engine down when the timer fired | it is wrapped in the call it translates to, the same as one handed to a listener |
-| goku's kaioken meter threw on every hit from a move its table does not list | a field read off an entry a table does not have throws in the source too, ending the function; the port ends it there quietly |
-| a projectile asked for "the character" behind it got nothing | the fighter behind `self` is the fighter in its own code and the owner in a projectile's |
-| pac-man's trampoline threw from a knockout handler after a newer trampoline replaced it | a projectile taken off because its fighter is at its limit lets go of what it listened to on others first |
-| marth's counter hit back for 10.8 off a 9 where the source hits for 10 | a field declared `int` keeps only the whole part of what is written to it (cut toward zero, not-a-number is 0); the declared type was never read, and a `Number` field starting at 0 was kept as a whole number too. a hit's stats read back in the source's units come back as the source's own numbers, not 29.99999 for 30 |
-
-open: marth's counter returns 10 off a 9 on both, launching at 130 degrees with the same speed (the source's 10.5 is its fresh bonus); a `seq` with long pauses is taken by the engine several frames a line at speed 1 (measured on its own record), so its presses land late; press with `hold`/`release` paced by `tick` when timing matters; a projectile made on the floor is told of that floor its first frame, as the source tells it (pikachu's jolt starts its hops from that touch); black mage's warp and meteor and megaman's beat differ in life or spawn on `proj_parity.py` and are next; bowser's castle's thwomp strikes a fighter standing at the second spawn on both engines, but the source launches him to a star KO where the port juggles him in place (hit up to the ceiling, dropped back onto the same spot, hit again) and its S6 rest sample lands at a different moment each run; the same on the build before this batch; its background podoboos and bubbles step 32 frames where the source steps 56 (S7); the SSF2 comparison gate cannot start giga bowser or wario-man: the game runs no match with a transformed form as its fighter, and asking bowser for his final form outside the final smash does nothing; a runtime tint that multiplies or offsets the colour channels (a colour transform, most `setColorFilters`) is struck: the engine's colour shader has the same fields but shows nothing on a fighter, and its filters are hue/saturation/brightness/contrast and glow only; walking off a ledge facing away does not catch it on either engine (the stock fighter here does, with a larger box); the engine's warning that a projectile "sat in the DESTROYING state" for twenty seconds fires for any projectile twenty seconds without a change of state, dying or not: the ones soak play trips it with are long-lived active ones (lucario's sphere held while charging, sandbag's held items, pac-man's trampoline), and the soak now names them as long-lived rather than as errors; wario's fart no longer carries the dizzy it states (no hitbox stat for it here); a
+- marth's counter returns 10 off a 9 on both, launching at 130 degrees with the same speed (the source's 10.5 is its fresh bonus); a `seq` with long pauses is taken by the engine several frames a line at speed 1 (measured on its own record), so its presses land late; press with `hold`/`release` paced by `tick` when timing matters; a projectile made on the floor is told of that floor its first frame, as the source tells it (pikachu's jolt starts its hops from that touch); black mage's warp and meteor and megaman's beat differ in life or spawn on `proj_parity.py` and are next; bowser's castle's thwomp strikes a fighter standing at the second spawn on both engines, but the source launches him to a star KO where the port juggles him in place (hit up to the ceiling, dropped back onto the same spot, hit again) and its S6 rest sample lands at a different moment each run; the same on the build before this batch; its background podoboos and bubbles step 32 frames where the source steps 56 (S7); the SSF2 comparison gate cannot start giga bowser or wario-man: the game runs no match with a transformed form as its fighter, and asking bowser for his final form outside the final smash does nothing; a runtime tint that multiplies or offsets the colour channels (a colour transform, most `setColorFilters`) is struck: the engine's colour shader has the same fields but shows nothing on a fighter, and its filters are hue/saturation/brightness/contrast and glow only; walking off a ledge facing away does not catch it on either engine (the stock fighter here does, with a larger box); the engine's warning that a projectile "sat in the DESTROYING state" for twenty seconds fires for any projectile twenty seconds without a change of state, dying or not: the ones soak play trips it with are long-lived active ones (lucario's sphere held while charging, sandbag's held items, pac-man's trampoline), and the soak names them as long-lived rather than as errors; wario's fart does not carry the dizzy it states (no hitbox stat for it here); a
 move that ends itself on its clip's last frame reads one source frame longer here on the
 recorder, against an earlier measurement that the source shows that frame; and the VICTIM freeze
 for a move that states none is measured on the source (the attacker's rule plus one) but not yet
@@ -2000,7 +1744,7 @@ scratch conversion of the whole roster):
 | it has no animation of this name | 191 | a label on an item's clip, which lives in a package of its own |
 | the rest | 1-100 each | the item system, cpu control, display-list ordering, the grabbed-foe pose, a colour transform while the match runs |
 
-ported this round, and no longer struck: the end of an attack (kept as an ask, answered when the
+ported, not struck: the end of an attack (kept as an ask, answered when the
 fighter leaves it), being destroyed (the same, for an object, and watched from whoever made it
 when it is something else's), a sound stopped by name (the handle the engine hands back is kept
 under it), an effect attached to something other than the fighter, the id an object was declared
@@ -2071,6 +1815,7 @@ chase them or count them as open.
 | a speed a move's code eases down each source frame also takes the floor's slowdown on every engine frame between | chibi-robo's side special lunge eases to a stop one source frame sooner (C6 counts 51 engine frames against 54) |
 | a share of speed a move's code works out or writes as it plays is not kept | none in the sample; a declared share is kept |
 | an air ease a move's code works out as it plays caps the fall without clamping it on the spot | a fall already past the cap keeps its speed one frame |
+| an attack's slowdown is skipped through the attacker's hit freeze | wario's side special recoil slides 18 pixels back here, 7 on the source; sandbag's forward tilt slides 12 after its hit, the source's stops |
 | a speed a move's code sets is slowed by the source before it moves on it and by this engine after, and the hit's freeze slows it to 1 there and 1.95 here | fox's side special (`verify.py sample --ssf2` C6: 48 engine frames where the source's 32 want 64): the low frame-20 friction (0.0325) lets fox slide past the edge after the dash and grab the ledge. read live with `move_trace.py fox "right:8 right+special" --at=250`. the move starts where the source's does (47.1 against 47.45) |
 
 **butterbuilding gets slower the longer it runs.** its stage class's update costs about 5 ms a
@@ -2093,9 +1838,8 @@ length (`phase_lens` in the plan).
 named by its `linkage_id`, and the fixture answers with its terrain clip for everything
 ([`SSF2_PACKAGE_FORMAT.md`](SSF2_PACKAGE_FORMAT.md)). collision is unaffected.
 
-**accurate stage-failure accounting (2026-09-10).** several saved gate reports predate this
-session's fixes and read as failures a re-gate clears: yoshisisland64 now passes 7/7 (its S4
-"FlyGuy gone" was stale -- the FlyGuy is live and flying, measured). DAT61 and rest area pass
+**stage-failure accounting.** a saved gate report can be older than the build and read as a
+failure a re-gate clears; re-gate before reading one. yoshisisland64 passes 7/7. DAT61 and rest area pass
 S3-S5 and fail only S6, and only on the SSF2 SIDE: their source home-run/all-star classes throw
 under a versus boot (they read an unset mode global), so the harness cannot read the source's
 fighters to compare against -- the PORTS run correctly. those are a comparison limitation on a
@@ -2330,10 +2074,10 @@ the live list of open converter issues. strike an entry when you fix it.
   seven gates; jungle island stands where the source does, with its banana art lengths the one
   open difference. see PORTING_STAGES phase 4 and the object rules.
 - **kingdom1, crateria, planet namek, steel diver, jungle island and pokemon colosseum stand
-  where the source does again.** the collision walk reads each clip's display list at the frame
-  it holds on, a closed contour is simplified as two halves, and a counter's step is no longer
-  redeclared (kingdom1's see-saw loop wedged the engine). lunar core stands too (its pit bridges are
-  planks, not a box). fourside stands too, now that the stand gate brings both
+  where the source does.** the collision walk reads each clip's display list at the frame
+  it holds on, a closed contour is simplified as two halves, and a counter's step is declared
+  once (a redeclared one wedges the engine in kingdom1's see-saw loop). lunar core stands too (its pit bridges are
+  planks, not a box). fourside stands too: the stand gate brings both
   engines to the same moment of the match before it drops (the source engine's frames are
   accrued from wall time, since it has no counter to ask). lunar core stands at both entrances (each is judged from the lift that cleared it). crystal
   smash 2's stand gate skips: the source holds no fighter at its entrances outside its game mode
@@ -2572,250 +2316,80 @@ the live list of open converter issues. strike an entry when you fix it.
 
 - **a projectile's flight is compared across both engines.** `tools/proj_probe.py compare <char>`
   fires each special that DECLARES a spawn on Fraymakers and SSF2 and reads where its projectile
-  gets to off each engine's object walk. it moves the other fighter far downrange first (a shot that
-  hits a parked target reads exactly like one that froze), charges a charge move to the top before
-  measuring (or it reads as a dead projectile), and fails a build only on what no wall or target can
-  fake: the port spawns nothing the source spawns, the source flies a shot a real distance and the
-  port barely moves it, or a spawn the source keeps at the muzzle (an effect, a wave) sits well off
-  on the port. a boomerang that flies out but does not come home is left to the printed travel and
-  settled numbers, since isolating one shot's whole path off the source's effect-laden object walk
-  is not reliable enough to fail on. moves and launch speeds come from the source's own declaration,
-  so it holds for content that does not exist yet.
-  the Fraymakers reader now trims the object walk to the engine's own live-projectile count: the
-  walk reads a display container that holds a killed projectile a beat past its death and then goes
-  stale, so a despawn was invisible (a shot that had died still read as present). the tagged eval
-  behind the walk carries `getProjectiles().length`, and the reader keeps that many, favouring the
-  entries that carry an animation. a projectile that should end but does not (or the reverse) is now
-  observable, which is how pit's arrow despawn bug was caught.
-  a sustained spawn (a held reflector, an owner-linked flight effect, an aimed teleport) only exists
-  while its button is down or its owner stays in the move, so the single-tap driver never keeps it
-  up. these are recognised from the source (the move's frame scripts or the spawn's own script read
-  the held controls, or the spawn kills itself when its owner leaves the move) and reported as data
-  rather than failed on, since the tap driver cannot sustain them on either engine; their spawn is
-  verified where the move can actually be held. this cleared the false spawns-nothing failures on
-  pit's orbitars and up-special effect and black mage's warp.
-  the STUCK check now gates on the HORIZONTAL launch a move declares, not the greatest of the two
-  axes: a spawn handed only a vertical launch (samus's morph-ball bomb pops up and drops on gravity,
-  x speed 0) is a dropped/placed one whose cross-engine "travel" is a vertical drop plus the source's
-  explosion effects, not a flight to compare, so it is no longer STUCK-flagged. a real horizontal
-  flier that stalls (link's n-special arrow) still is. mario, black mage, pit and samus pass; link
-  fails on exactly one genuine bug (its arrow, below).
-  four general converter bugs it found are fixed:
-  - x decay was a multiply (now the per-frame subtraction the source runs, so a boomerang comes back
-    and a fast punch no longer leaves the screen in a frame).
-  - a write of a thing's own position was left as a getter on the left of `=` (invalid Haxe that took
-    the whole script down at load; now the setter).
-  - a shot aimed by angle (`angleControl`) was struck out, so blackmage's meteor charged, hovered,
-    and then sat there on release instead of dropping (now the two velocity writes the source makes;
-    game and watch, kirby, ness, pikachu, chibi robo and tails aim shots the same way).
-  - asking what attack a fighter runs (`getCurrentAttackFrame`) was struck, so a projectile riding a
-    fighter neither followed it nor ended: pit's orbitars and its up-special effect both stick to pit
-    while it runs the move now, and end when it stops (simon reads the same way).
-  a fifth is fixed: a projectile that reacts to hitting something (`PROJ_COLLIDE`) was struck, so
-  link's boomerang flew out, reversed, and sailed off instead of stopping at link. it now becomes a
-  per-frame overlap read off each entity's collision box, firing on enter only, so the boomerang
-  returns and despawns at the thrower (verified live; bomberman and the other collision-reacting
-  characters boot clean).
-  a sixth general fix: a neutral/side special whose whole charge lives inside one clip (samus's beam)
-  played straight through and dropped to stand before it could fire, because Fraymakers loops a clip
-  once. the clip is now split (in both the animation splitter and the sprite parser) so the base
-  loops its charge section and the attack frames become `<name>_attack`, and the source's label jumps
-  to "attack"/"attack2" route through `_jumpLabel` (keyed on the source clip, since many split
-  animations share those label names). samus's beam now holds the charge, builds to full, and stores,
-  verified live; the fire path reaches its createProjectile (force-play confirms). the one gap left is
-  the fire's frame-14 decision is a single-frame script the live harness (which advances several
-  frames a tick) can land past, so the fire is not observable in-harness, though at real 60fps that
-  frame is hit; the re-press fire path runs off a timer and is not subject to the skip.
-  a seventh general fix: the source has a macro-state named ATTACKING (one name covering every
-  attack), and this engine keeps that as a state GROUP, not a single state, so `inState(ATTACKING)`
-  read a state name the engine answers with null and the check meant nothing (it asked
-  `inState(null)`). it now maps to the group ask (`inStateGroup(CStateGroup.ATTACK)`), method and
-  constant together. pit's arrow, which ends itself once its owner is no longer attacking, never
-  despawned without this; it now dies exactly as its owner leaves the attack group, matching the
-  source (verified live off the engine's own live-projectile count). 52 other call sites across the
-  corpus were reading the same dead check.
-  a shot leaves from the fighter's own position plus its stated offset: the source's `getY()`
-  stays at the feet whatever the pose (read off the per-frame record: link's arrow leaves 31 px
-  above him, the boomerang 21, fox's laser 23, pikachu's thunder 220), and the port's spawn heights
-  match those to a few pixels (`proj_parity.py`).
-  a harness reliability fix went in alongside: the live session boots the INSTALLED package as-is
-  and never rebuilds it, and `peptide convert` writes only source, so a reconvert left the installed
-  `.fra` stale and a probe silently tested the OLD build (the lift fix read as still-broken for a
-  while because of exactly this). the projectile probe now rebuilds a character's package whenever
-  its source library is newer than the package before booting it, so a probe always tests what was
-  just converted.
-  a ninth general fix: a shot aimed by angle whose magnitude the decompiler could not recover came
-  through as a null operand, and lowering it wrote a velocity of null-times-scale = 0, which clobbered
-  the launch the spawn had already handed the projectile and froze it in place. the source's engine
-  ignores a velocity write with an undefined magnitude, so the write is dropped and the launch stands.
-  pichu's grounded thunder jolt travels again.
-  a tenth general fix: a projectile with several custom local states named them all from the same base
-  (three attack labels to CUSTOM), so the LState object literal carried duplicate keys. that is an
-  invalid object, so the whole projectile script failed to load and it spawned with no working body
-  (a null position, speed and animation). repeated names now take a numeric suffix (CUSTOM, CUSTOM2,
-  CUSTOM3), and rayman's vortex flies forward off its launch again.
-  the flight driver holds a held-to-fire special by the move's OWN chord (direction plus special, not
-  a bare special that fires neutral-b) from a clean grounded stand, releases a charge once its window
-  has passed to catch a release-fire shot (pac-man's power pellet launch), and reports a sustained or
-  steered move (din's fire, aimed by the stick while held) as data rather than failing it on the short
-  travel the tap/hold driver cannot steer. 31 of the 33 projectile characters pass the flight compare.
-  two former failures were the harness mistaking a move it cannot drive or observe for a defect, and
-  the compare now reads the source and reports them as data: isaac's growth positions itself off
-  getGrabbedFoe().getX() so it fires only while a grab is live (the driver holds none, so the port
-  rightly spawns nothing and the source's "travel" is the fighter's own moving parts), and rayman's
-  vortex declares its own projectile_grabbed state, a grab trap that flies out then grabs and
-  transforms in a couple of ticks, rendered in a grab layer the projectile walk does not sample (its
-  spawn and launch are verified in-engine, the LState fix above; its brief flight is not a 1:1
-  travel signal). both are read structurally from the source, so they hold for content not written yet.
-  the other two are open converter gaps, and they have DIFFERENT roots, each traced to specific code.
-  sonic's spin dash (special_down) is a multi-mechanism charge move, and it is now PARTLY fixed. the
-  in-clip charge loop (anim_splitter) that only ran for special_neutral/special_side now runs for a
-  CHARGING special_down too, gated on the "charging" label (reflectors and counters on special_down
-  wear the generic "loop" label, not "charging", so they are left alone). with that landed, sonic's
-  charge holds, the release reaches the dash clip, the dash's handoff runs (xConstantTurn set to
-  xconstant and held stable), and the afterimage timer is created. the same widen made isaac and tails
-  hold their own charging special_down as a real charge (C5 now reads it "held by its own code"), and
-  blackmage/sonic/isaac/tails are unregressed on projectile flight and C1-C5, fox's reflector
-  untouched, goldens unchanged. the roll's afterimage now spawns and the flight compare no longer
-  flags special_down at all: sonic's one open projectile is special_up. a separate converter
-  limitation remains for a self-looping fire clip (the roll's own dash loop is a frame-script
-  gotoAndPlay that becomes playFrameLabel, which does NOT redirect the playhead mid-playback, so the
-  clip cannot sustain its own roll from inside itself), but it is not what the compare fails on.
-  sonic's grounded up special spring used to be the last open one, now fixed. the spring the source
-  places is a two-step handoff: the character spawns sonicspringgroundduring, whose own frame script
-  spawns sonicspringground and then self.kill()s. discovery read only the CHARACTER's spawn calls, so
-  sonicspringground was never emitted (springidle was emitted and orphaned), the handoff spawned
-  nothing, and the spring vanished at once. discovery now follows the projectiles' OWN spawn calls to
-  a fixpoint (scanning each discovered projectile's behavior for what IT fires, discovering by linkage
-  and pulling from a shared package the same way character-fired clips are), so sonicspringground
-  emits and the spring spawns and persists. a name a projectile fires is resolved through the
-  file's OWN table first (its `linkage_id` says which clip draws it), the way a character's
-  spawns are; asked of a package beside the file only, it worked from the corpus copy (the
-  file is its own neighbour there) and not from the installed archive. sonic passes C1-C6 and
-  the projectile compare from the installed archive, with samus and link projectiles unregressed.
-  sora's keyblade throw (special_neutral) is a different gap. SSF2's `forceAttack("b")` buffers the
-  input that starts a move so the fighter performs it, and it has no script input-buffer analog here.
-  it used to be struck out entirely, so an air special that forced its grounded finisher on landing
-  did nothing on 28 characters. now the converter forces the move the call names: the argument is the
-  SSF2 name of the move, `ssf2_to_fm_anim` maps it to the animation the entity carries, and a move IS
-  its animation here (its keyframe scripts spawn its hitboxes), so the call becomes a playAnimation of
-  that animation. fifteen of the affected characters were checked C1-C5 (blackmage, captainfalcon,
-  link, megaman, simon, sora, mario, luigi, pichu, zelda, ness, wario, dedede, bowser, isaac), three
-  of them C6 cross-engine (blackmage, link, captainfalcon), and link and megaman projectiles are
-  unregressed, so the forced moves play and return to stand with parity intact.
-  sora's keyblade (strikeraid) flies, comes back and is caught. its declaration is read in full:
-  `sora_strikeraid: { classAPI: SoraStrikeRaid, linkage_id: "sora_strikeraidproj", xspeed: 25,
-  xoffset: 30, yoffset: -17, xdecay: 2.4, ... }`. a getProjectileStats entry is a projectile because
-  of the method it sits in, so a declaration with its own behaviour class (SoraStrikeRaid extends
-  the api's projectile) is kept, its clip found by the linkage_id the table states, and its declared
-  launch and spawn offset both installed. the projectile's other states are its own now: the clip
-  under each label of the outer clip is cut into its own animation with ITS OWN frame scripts on it
-  (merged onto one timeline, the return's frame 7 ended the flight on the seventh frame of the
-  throw), the behaviour class's methods and constants come over too (`HAND_X_OFFSET = -24` read off
-  the class's traits, `catchIt` and friends as functions), a projectile's `forceAttack("pull")` is a
-  move to its own state (`Common.toLocalState(LState.PULL)`, the state named after the label), a
-  label it asks its summoner to jump to is signalled onto the summoner's exports and taken up on its
-  next frame (a call across scripts loses the caller's helpers), and the summoner's move it asks
-  about is renamed to this engine's name. the invented "TODO: implement state logic" branch is gone:
-  what a state does is on its frames. the projectile's stance clips are also kept OUT of the
-  fighter's script (they were folded in by name and struck line by line). live: the keyblade leaves
-  at 16.25, decays through zero, turns back, enters `projectile_pull`, tweens to the hand and ends.
-  sora's play-test defects were all in the converter and all general:
-  - side special float and arc: `air_ease: 0` is a cap of ZERO, not "none" (the source holds a
-    vertical speed of exactly 0 for the twelve frames before the dash and again after the rise,
-    until the frame that writes -1). the port fell at terminal through it; now it hangs, dashes,
-    rises 7.8 on up and holds at the apex, and falls again at the -1, frame for frame with the
-    source.
-  - side special rotation: the source's `rotate` stat turns the art to face the way the fighter
-    moves; this engine's autoRotate reads its art as pointing up, a quarter turn off. rotate is
-    now the script's own (`__rotate({ on })` + `__applyRotate` each frame, atan2 of the velocity
-    measured from the facing), declared per attack like air ease, reset upright when it ends.
-  - side special hold (the multi-hit that carries the foe): three struck calls. `getType()` answers
-    a kind number here and a name there ("SSF2Character") that the script compares and slices, so
-    it is answered by name (`__typeName`, from the entity_type_names table); a method called by a
-    worked-out name (`foe["get" + kind + "Stat"](...)`) goes through `__callByName`/`__objStat`
-    (the api's stat getters, source stat names renamed, a stat this engine lacks answering the
-    source's default); `getState() == 14` compares the source's own state numbers, which the file
-    ships in its CState class, so the number is read back to its name there and asked through
-    `__srcStateIs` against the states here it covers (source_state_names); `calculateKnockback` is
-    carried as `__calculateKnockback` in this engine's knockback units; `getAttackBoxStat(1,
-    "damage")` is `__hbStat`, answered from the move's declared boxes and the writes made since
-    (every `updateHitboxStats` is noted for it); `move(0, -25)` crosses the size scale; a forced
-    hitstun counts source frames.
-  - double jump held back: the source's `endAttack()` at the end of the backflip ended the
-    animation, and in JUMP_MIDAIR that left the fighter falling with no control until it died.
-    `__endAttack` ends an attack's animation (the engine follows with its own landing) and puts
-    any other airborne state into FALL. the backflip segment goes out as `jump_midair_back`,
-    which this engine plays of its own accord on a double jump made holding back (without one it
-    fell with no animation and no control), and a segment cut from a jump carries
-    `allowMovement: true` so the drift the source keeps through it is kept here (an animation
-    the engine does not know starts without it, measured).
-  - effects: a sign on a scale is the source art's (its dust is drawn upside down and flipped back
-    with `scaleY: -0.5`), so on a substituted engine asset only the size carries over; an effect's
-    x/y cross the size scale like a projectile spawn's. three art
-    defects behind "not aligned, not sized": a clip that draws several parts at once kept only
-    the first (the fire ring is six fireballs, and one was shown), so every part now gets its own
-    image layer, in effects and projectiles alike; a rasterized vector's picture starts at the
-    shape's bounds, not its origin, so that offset now rides the placement (the blizzard ellipse
-    hung below the feet where the source draws it over the chest); and a placement that states
-    no matrix keeps the one its depth already has (a `Replace` swaps the picture and nothing
-    else), where it was read as identity, so the keyblade's glow lost its 0.18 scale on its second
-    frame and drew as a 250 px orange arc across the sky with the key itself dropped as a second
-    part. pictured frame for frame against the installed game: the fire ring around the body, the
-    blizzard ellipse over the chest with its bolts, the keyblade as a small spinning key with a
-    small crescent.
-  - the spell gauge is a clip the script builds for itself, and a label played on it threw and
-    took the rest of the frame with it, so the spell sections played out of order; a label is
-    played only on something that can play one.
-  the flight compare covers 33 projectiles. the back double jump is driven through `hold`
-  (`hold left`, then `hold left+jump`: the state enters, the backflip plays, the stick answers
-  through it, the state ends into FALL) and through `seq` with `release:` as the neutral token
-  (`none` is refused client-side). a matched-frame picture is taken at `speed 1` with `hold`,
-  one `tick 1` + `shot` per frame, and the record read after each shot to say which frame it
-  landed on (an eval between shots costs frames, the trace read does not). an adopted session
-  keeps whatever fighter and package it had, so a probe packs first and boots. a stat another
-  object is asked for (`foe.getCharacterStat`) comes back in the source's units
-  (runtime_read_units). sora passes every character gate C1 through C6.
-  the whole roster carries this breadth, not just the projectile characters. the character gates ran
-  over all 45: every one passes C1 through C5 (convert, publish, boot with no script errors, held-
-  ground speed matching the walkSpeedCap it declares, and every move plays and returns to stand), and
-  every one checked cross-engine passes C6 too. the one C6 failure was the harness reading a move
-  wrong, not a port defect, and it is fixed: simon's `attack` read as fall_loop where the source
-  jabbed, because a heavy fighter lands slower after the gate's park (simon settles over ~6 frames of
-  land_light and fall_loop) and the C6 move comparison capped a leading fall/land settling run at 4
-  frames, so it read that landing as the move though jab1/special_neutral/etc. all played right after.
-  fall/land are state names no move carries, so the cap is now 12 (well under any real move length),
-  and simon passes C6 with mario/ganondorf/dedede unregressed. chibirobo's earlier C5 aerial_up miss
-  was flaky driver timing and passes on a re-run. the port was correct in both cases.
-  a C6 recovery-driver limit was found and mostly closed, and none of it is a port defect. the gate
-  parks a fighter above the floor to drive its recovery (up special) from the air, but some fighters
-  (fox, blackmage, pikachu) re-attach to the floor the instant they are set above it, so the recovery
-  could not be launched from the air and read as fall_loop where the source flew. driven from a real
-  jump the same recoveries play their special_up_air correctly (checked by hand), so the port is right;
-  the gate simply cannot stage a recovery on a floor-snapping fighter (its set-Y does not take). the
-  gate now detects the snap (on-floor right after the air park) and reports that input as un-driveable
-  rather than failing it, the same way S6 skips a stage it cannot stand a fighter on; fox, blackmage
-  and pikachu pass C6 with mario/dedede unregressed. (a jump-to-unstick fix was tried first and
-  reverted: pressing jump made the recovery read as a double jump and regressed mario/dedede.) two more
-  recovery quirks were the driven input, both fixed and neither a port defect: nothing was released
-  between inputs, so the side special's held right leaked into up+special and goku read a side special
-  first, now cleared by a release between inputs; and goku's teleport reads the heading only if up is
-  already down as special fires, so the recovery is driven as up:2 up+special (a non-directional up
-  special is unaffected by the extra up frames). isaac, tails, marth, metaknight pass C6. chibirobo
-  also passes now: its aerial_up is the same floor-snap case as the recovery (it re-attaches to the
-  floor when parked above it), so C5 reports the aerial as un-staged rather than failing it, the same
-  way the recovery skip works; its C6 then runs and passes. goku is fixed too: its teleport recovery
-  reads its heading only if up is cleanly down as special fires, so it intermittently played the side
-  special; the driver now re-drives a port recovery that came out as a non-up special (up to twice,
-  and only when it actually staged wrong, so a correct recovery never re-drives), and goku passes 3/3
-  with samus/mario/fox/pikachu unregressed. kirby is fixed too: its attack read aerial_neutral in the
-  full run (a floaty fighter can still be a frame off the floor when standing() gives up, and an
-  attack pressed a frame airborne comes out as the aerial), though its jab was fine in every isolated
-  reproduction. a grounded input must fire from the floor, so before a non-recovery input the port is
-  now set back on the floor and the engine attaches it, rather than trusting the pose; a fighter
-  already grounded is put where it already is, so a correctly-staged one is unaffected. kirby passes
-  C6 with fox (a floor-snapping fighter) unregressed. every character checked cross-engine now passes
-  C1-C6.
+  gets to off each engine's object walk. it parks the other fighter downrange, charges a charge move
+  to the top first, and fails only on what no wall or target can fake: the port spawns nothing the
+  source spawns, the source flies a shot a real distance and the port barely moves it, or a spawn the
+  source keeps at the muzzle sits well off on the port. moves and launch speeds come from the
+  source's own declaration, so it holds for content that does not exist yet. 31 of the 33
+  projectile characters pass; the other two are read as data, below.
+  - the Fraymakers reader trims the object walk to the engine's own live-projectile count
+    (`getProjectiles().length`), since the display container holds a killed projectile a beat past
+    its death.
+  - a sustained spawn (a held reflector, an owner-linked effect, an aimed teleport) is recognised
+    from the source (its scripts read the held controls, or it kills itself when its owner leaves the
+    move) and reported as data, since a tap driver cannot sustain it on either engine.
+  - STUCK gates on the HORIZONTAL launch a move declares: a spawn handed only a vertical launch
+    (samus's morph-ball bomb) is a drop, not a flight.
+  - a held-to-fire special is driven by the move's own chord from a clean stand, a charge is released
+    once its window passes, and a stick-steered move (din's fire) is reported as data.
+  - isaac's growth fires only while a grab is live (it positions off `getGrabbedFoe()`), and
+    rayman's vortex declares its own grab state rendered in a layer the walk does not sample. both
+    are read from the source and reported as data.
+  - a probe rebuilds a character's package whenever its source library is newer, so it always tests
+    what was just converted.
+
+  the projectile rules the compare holds the port to:
+  - x decay is the per-frame subtraction the source runs.
+  - a write of a thing's own position is the setter.
+  - a shot aimed by angle (`angleControl`) is the two velocity writes the source makes; one whose
+    magnitude the decompiler cannot recover is dropped, as the source ignores an undefined velocity.
+  - `getCurrentAttackFrame` is answered, so a projectile riding a fighter follows it and ends when the
+    move does.
+  - `PROJ_COLLIDE` is a per-frame overlap off each entity's collision box, firing on enter only.
+  - a charge that lives inside one clip is split so the base loops its charge section and the attack
+    frames become `<name>_attack`; label jumps route through `_jumpLabel`. a charging special_down
+    is split the same way (gated on the "charging" label, so reflectors and counters are left alone).
+  - `inState(ATTACKING)` is the group ask (`inStateGroup(CStateGroup.ATTACK)`).
+  - a shot leaves from the fighter's position plus its stated offset; the source's `getY()` stays at
+    the feet (spawn heights match to a few pixels, `proj_parity.py`).
+  - repeated custom local state names take a numeric suffix (CUSTOM, CUSTOM2).
+  - discovery follows the projectiles' OWN spawn calls to a fixpoint, and a fired name resolves
+    through the file's own table first (sonic's spring handoff).
+  - `forceAttack(name)` plays the animation that move maps to; on a projectile it moves to its own
+    local state.
+  - a projectile table entry with its own behaviour class keeps that class, its clip found by the
+    stated linkage_id, its launch and offset installed; each label of its outer clip is its own
+    animation with its own frame scripts, and the class's methods and constants come over.
+  - `air_ease: 0` is a cap of zero, not "none".
+  - the source's `rotate` stat is the script's own (`__rotate` + `__applyRotate`, atan2 of the
+    velocity from the facing), since this engine's autoRotate reads art as pointing up.
+  - `getType()` is answered by name, a method called by a worked-out name goes through
+    `__callByName`/`__objStat`, a source state number is read back through the file's own CState
+    class, `calculateKnockback` and `getAttackBoxStat` are answered in this engine's units.
+  - `__endAttack` ends an attack's animation and puts any other airborne state into FALL; a back
+    double jump goes out as `jump_midair_back`, and a segment cut from a jump keeps `allowMovement`.
+  - an effect's scale sign belongs to the source art, so a substituted engine asset keeps the size
+    only; every part of a multi-part clip gets its own image layer; a rasterized vector's offset
+    rides the placement; a placement with no matrix keeps its depth's matrix.
+  - a label is played only on something that can play one.
+
+  sonic's spin dash roll cannot sustain its own loop from inside its clip (its `gotoAndPlay` becomes
+  `playFrameLabel`, which does not redirect the playhead mid-playback); the compare does not fail on
+  it. sora's fire's frame-14 decision is a single-frame script the live harness can land past, so it
+  is not observable in-harness.
+
+  the whole roster passes the character gates: all 45 pass C1 through C5, and every one checked
+  cross-engine passes C6. the C6 driver's rules:
+  - a leading fall/land settling run is capped at 12 frames (a heavy fighter like simon settles
+    longer than 4).
+  - a fighter that re-attaches to the floor when parked above it (fox, blackmage, pikachu,
+    chibirobo's aerial) has its recovery or aerial reported as un-staged rather than failed.
+  - inputs are released between moves; a recovery is driven as `up:2 up+special` and re-driven (up
+    to twice) when it stages as a non-up special (goku's teleport).
+  - before a grounded input the port is set back on the floor and attached, so an attack is not
+    pressed a frame airborne (kirby).
+  - the back double jump is driven through `hold` and `seq` with `release:` as the neutral token; a
+    matched-frame picture is `speed 1` + `hold`, one `tick 1` + `shot` per frame.
 
 - **stat scaling is approximate.** see "physics-stat tuning" above. the
   `stats.jsonc :: multipliers` are hand-tuned and the generated `CharacterStats.hx` marks
@@ -2964,38 +2538,22 @@ are catalogued in the two new sections above; the items here are the main conver
   converted fighters start together; a later slot is always loaded as a custom package, so a
   built-in one there (luigi with commandervideo) ends the start. put the built-in fighter first.
   matches started from the game's own menus are not affected.
-- **projectile flight is not compared across engines yet, though each engine can now be read.**
-  the C1-C6 character gates measure the FIGHTER's animation, never what it spawns, so homing,
-  owner-aim, owner-influence and trails are verified per engine (offline replay of the emitted
-  update, plus a live spawn) but not fighter-for-fighter against SSF2. `tools/proj_probe.py` +
-  `Engine.projectiles()` read a projectile's position off the object walk (`tree`) crash-free
-  now, on both engines. what a cross-engine comparer still needs: the `tree` walk should tag each
-  node with a NEUTRAL role (character / projectile / vfx / structure), computed engine-side from
-  the object's type, so the host can pick out projectiles on either engine WITHOUT matching the
-  SSF2 projectile class name (which is engine-internal and must not enter a tracked file, unlike
-  the public `FraymakersProjectile`). with that tag, a `compare` mode fires the same move on both
-  engines and lines the two projectile paths up frame by frame (aligned through the same coord
-  model the fighter comparison already uses). a known thing it will surface: a converted homing
-  missile whose flight animation ends can stall on-screen (its own state machine stops driving
-  it); whether SSF2 does the same is exactly what the comparer would answer.
-- **three stages that would not boot now do, each a general emit fault.** kingdom1's HUD
-  template default (`hudTextString`, full of spaces and newlines) shattered the `[class-fields]`
-  marker (packed `name=value` split on whitespace) into an unterminated string and a bogus var
-  per word, stopping the whole parse; only a whitespace-free default rides the marker now, and a
-  camera-background piece whose container the engine did not make is skipped instead of throwing.
-  krazoapalace called `__addTo` (a Flash addChild of a bitmap with no FM analog) that shipped
-  only when the stage made a library clip; the helpers ship whenever the body names one.
-  traininggrid, a bare grid with no hazards or weather, never declared the verify counters its
-  update increments and the gate reads; the set is declared once at the top when nothing else
-  did. `check-emitted` no longer false-flags a `;`-line that closes more than it opens.
-- **a flaky SSF2 boot no longer reads as a stage regression.** the source engine decrypts its
-  assets on demand and a cold boot occasionally misses the window; worse, the gate cleaned up a
-  prior session by its literal binary name (`peptide ssf2 session`), so a run under a frozen
-  copy (`PEPTIDE_BIN`) left the old daemon holding its port and every following stage failed
-  with address-in-use, reported as "the SSF2 session never came up". a batch of 52 stages read
-  as failed on that alone. the cleanup now matches `ssf2 session` whatever the binary is called
-  and a timed-out boot retries once; re-gated, those stages pass. `tools/floor-profile.py` and
-  the sweep script take `PEPTIDE_BIN` the same way.
+- **projectile paths are compared by where they end up, not frame by frame.** the C1-C6 gates
+  measure the FIGHTER, so homing, owner-aim, owner-influence and trails are verified per engine
+  (offline replay plus a live spawn), and `proj_probe.py compare` reads travel and where a shot
+  settles. a frame-by-frame compare needs the `tree` walk to tag each node with a NEUTRAL role
+  (character / projectile / vfx / structure), computed engine-side, so the host picks out
+  projectiles on either engine without matching an engine-internal class name. it would also
+  answer whether a homing missile whose flight animation ends stalls on SSF2 the way it can here.
+- **a stage boots whatever its HUD template default holds.** only a whitespace-free default rides
+  the `[class-fields]` marker; a camera-background piece whose container the engine did not make
+  is skipped; the clip helpers ship whenever the body names one; the verify counters are declared
+  once at the top when nothing else did. `check-emitted` counts a `;`-line that closes more than it
+  opens correctly.
+- **a cold SSF2 boot can miss its asset window.** a timed-out boot retries once, and the session
+  cleanup matches `ssf2 session` whatever the binary is called, so a frozen copy (`PEPTIDE_BIN`)
+  does not leave an old daemon holding the port. `tools/floor-profile.py` and the sweep script take
+  `PEPTIDE_BIN` the same way.
 - **a backdrop carried by a parallax layer is invisible to the live walk.** the engine plays a
   parallax layer's animation itself, and the tree walk lists entities and containers, not the
   camera's layers, so S7 reports such a backdrop as missing on the fraymakers side (yoshi's
@@ -3134,14 +2692,6 @@ two things that hid behind it:
   one unmirrored picture serves every frame. checking the emitted keyframes directly, rather than
   through the audit, is what caught it.
 
-### the live bridge is wedged
-
-the engine launches a match (`LAUNCHED`, no script errors) and then never answers: no `ANIM:` lines,
-no reply to `shot` or `tree`. it reproduces on a STOCK stage with no converted content, so it is the
-environment and not the port. a previously-good package fails the same way, which is the control.
-until it clears, stage work is verified against the emitted artifacts (the audit above, and reading
-the emitted keyframes) rather than in engine.
-
 ## a projectile that outlives its move
 
 measured on chibirobo's down air, frame by frame through the log mirror:
@@ -3185,17 +2735,13 @@ which is what made this look per-character for a while.
 
 ## two emitters, one filename
 
-a clip a character fires can also be emitted as art that stands on its own. both
-used to be written as `<sourceName>.entity`, so whichever went second was the
-only one left, and the move fired a thing with no behaviour behind it. the
-engine then falls back to the owner's own content and plays a CHARACTER
-animation on a projectile, which is how it surfaced: a frame script of the
-character's ran with a projectile as `self`, so nothing the character's script
-declares was in scope and the frame reported `Unknown variable` for a name that
-is right there in its own file.
-
-the entity file is now named by the id it is addressed by rather than by the
-name the source spells it with, so the two no longer share one name.
+a clip a character fires can also be emitted as art that stands on its own. the
+entity file is named by the id it is addressed by, not the name the source
+spells it with, so the two never share a filename. if they did, whichever went
+second would win, and the engine would fall back to the owner's content and play
+a CHARACTER animation on a projectile: a frame script of the character's running
+with a projectile as `self`, reporting `Unknown variable` for a name right there
+in its own file.
 
 worth keeping in mind when a frame reports `Unknown variable` for a name its own
 script clearly declares: log `Std.string(self)` from the frame before assuming
@@ -3250,9 +2796,3 @@ anyone writes after this.
 so this is closed as far as reading takes it. what would move it is content, not
 code.
 
-the number was 273 across 43 until the check that produced it was fixed twice --
-it ran before the package was written, and it could not read an ask written into
-a frame script at all -- and 34 until a borrowed clip was looked for in the files
-beside the one being converted as well as in the game's own library, and until a
-package was searched under the name it gives for itself rather than the name of
-the file it is in.
