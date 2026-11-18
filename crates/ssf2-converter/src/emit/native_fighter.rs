@@ -477,7 +477,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
-    let mut update = vec!["hitFrame();".to_string(), "freezeSlowFrame();".into(), "attackFrame();".into(), "fastFallFrame();".into()];
+    let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into(), "fastFallFrame();".into()];
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("jump_in_attack") { update.push("jumpInAttackFrame();".into()); }
