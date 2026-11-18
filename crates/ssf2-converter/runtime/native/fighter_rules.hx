@@ -327,6 +327,23 @@ function relaunch() {
 }
 function onHitstop(e) { relaunch(); }
 
+// an attacker's hit freeze: the source moves it not at all but still slows it each frozen frame
+// (the animation's own slowdown, else the fighter's, on the floor or in the air), so the slowdown
+// it owes is taken off as it comes out (sandbag's forward tilt stops where the source's does)
+var frozeFor = self.makeInt(0);
+function freezeSlowFrame() {
+	if (self.getHitstop() > 0) { if (self.inStateGroup(CStateGroup.ATTACK)) frozeFor.inc(); return; }
+	var n = frozeFor.get();
+	if (n == 0) return;
+	frozeFor.set(0);
+	var floor = self.isOnFloor();
+	var f = self.getAnimationStat(floor ? "friction" : "aerialFriction");
+	if (f == null || f < 0) f = self.getGameObjectStat(floor ? "friction" : "aerialFriction");
+	if (f == null || !(f > 0)) return;
+	var vx = self.getXSpeed();
+	var cut = f * n;
+	self.setXSpeed(Math.abs(vx) <= cut ? 0 : vx - (vx > 0 ? cut : -cut));
+}
 // every frame: the hold a hit asked for, put in once its freeze is over
 function hitFrame() {
 	stood.set(self.isOnFloor());

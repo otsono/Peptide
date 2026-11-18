@@ -59,6 +59,9 @@ length and go the wrong way. what it has settled:
   `onlyAffectsAir`), is judged as it connects: one that does not fit the fighter hands the hit to
   the attack's box that does. this engine's own condition drops the hit on the first box it
   rejects, so sandbag's down air (a box for each) hit no one.
+- an attacker held by its hit freeze is slowed through it as the source slows it (the animation's
+  own slowdown, else the fighter's), taken off as it comes out: sandbag's forward tilt slides 3
+  pixels after its hit where it slid 12.
 - an attack in the air fast-falls on a press down once it is no longer rising, unless it states
   `allowFastFall` false, as the source's do (sandbag's air down special drops at his fast-fall
   speed until its own code holds him; it starts a source frame later here, the engine moving him
@@ -2059,7 +2062,6 @@ chase them or count them as open.
 | two standing fighters are pushed apart at this engine's rate and settle at its own gap | the `=` spacing lines in `hit_parity.py`, and the moves the gap moves (samus's bomb, ness's pk flash, krystal's jab angle, isaac's gaia, zelda's din's fire) |
 | an aerial starts at each engine's own point of the hop | aerial hit counts and drop-move timing (sonic's up air, ganondorf's back air, mario's neutral air) |
 | a move whose code rolls at random lands differently run to run | luigi's misfire, game & watch's judge and chef, peach's turnips, waluigi's dice |
-| an attack's slowdown is skipped through the attacker's hit freeze | wario's side special recoil slides 18 pixels back here, 7 on the source |
 | a grounded attack out of a walk or dash carries the old speed two engine frames before slowing | falco's jab slides 27.6 pixels here, 15.5 on the source |
 | an attack that resets movement keeps the one step the engine took on the old speed | falco's side special out of a walk starts about 9 pixels further on |
 | a nonzero walk speed a move's code writes under a held direction skips the source's one frame of walk acceleration | bowser's walk reads 2 where the source reads 2.5, then catches up |
