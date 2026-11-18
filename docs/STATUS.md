@@ -426,10 +426,14 @@ as before.
 
 the converted stage carries a clean display name (a per-stage override in
 `mappings/stage/metadata.jsonc`, with the SSF2 id title-cased as the fallback) plus a source
-series, and records its original SSF2 soundtrack (the `bgm_*` ids
-pulled from the stage DAT) in the description. it plays a real FM bgm (the override map's pick
-or `default_music`) since the SSF2 audio isn't shipped with FM. the content id is suffixed
-`<id>ssf2` so it can't shadow a built-in stage.
+series, and its own soundtrack: each `bgm_*` track the stage names is read out of the package
+the game keeps it in, written as Ogg Vorbis in `library/audio`, and declared as a `music` content
+of the stage's resource (song name, artist and `loopPoint` from what the track's package
+registers, its `musicLoop` taken as milliseconds), which the stage's `music` list names `local`,
+as a custom stage ships its tracks. a live match picks one of them and it plays (battlefield's
+three: about 1.7 to 5.5 MB each). a stage that names no track keeps a public FM bgm (the override
+map's pick or `default_music`). the content id is suffixed `<id>ssf2` so it can't shadow a
+built-in stage.
 
 declared `platforms` in metadata become real FM moving Structures (the engine idiom from the
 stage-template): a per-platform grey block animation (an IMAGE sized to the platform + a FLOOR
@@ -455,7 +459,7 @@ a stage's objects (hazards, enemies, moving platforms, launchers) come from the 
 package declares: each ships as a custom game object running its own translated class, with its
 size, hit, art clip (`getOwnStats().linkage_id`), animations and spawn taken from what the class
 says. nothing is detected by name and nothing is declared per stage: `metadata.jsonc` carries a
-stage's display name and music only.
+stage's display name and its fallback music only.
 
 three stages boot with zero script errors and are the regression set for converter changes:
 bowserscastle (lava + the recycling thwomp), clocktown, and bombfactory. always live-check a

@@ -193,3 +193,18 @@ pub fn manifest_packages() -> &'static [SharedPackage] {
         out
     })
 }
+
+/// One of the game's music tracks by its id (`bgm_battlefield`): the manifest's entry for it (its
+/// name) and its package, decompressed. A stage names its tracks by id; each lives in a package
+/// of its own.
+pub fn music_package(id: &str) -> Option<(crate::ssf2_manifest::Entry, Vec<u8>)> {
+    let dir = data_dir()?;
+    let swf = game_swf(&dir)?;
+    static INV: OnceLock<Option<crate::ssf2_manifest::Inventory>> = OnceLock::new();
+    let inv = INV.get_or_init(|| crate::ssf2_manifest::read(&swf, &dir).ok()).as_ref()?;
+    let entry = inv.music.get(id).or_else(|| inv.music.iter().find(|(k, _)| k.eq_ignore_ascii_case(id)).map(|(_, e)| e))?.clone();
+    let file = if entry.file_pub.is_empty() { &entry.file } else { &entry.file_pub };
+    let raw = std::fs::read(dir.join(file)).ok()?;
+    let movie = crate::ssf::decompress(&raw).ok()?;
+    Some((entry, movie))
+}

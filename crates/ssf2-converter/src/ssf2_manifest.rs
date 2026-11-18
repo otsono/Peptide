@@ -79,6 +79,9 @@ pub struct Inventory {
     pub modes: BTreeMap<String, Entry>,
     #[serde(default)]
     pub menu: BTreeMap<String, Entry>,
+    /// the game's music, a package to each track
+    #[serde(default)]
+    pub music: BTreeMap<String, Entry>,
 }
 
 fn b64_decode(text: &str) -> Result<Vec<u8>> {
@@ -186,6 +189,7 @@ pub fn read(ssf2_swf: &Path, data_dir: &Path) -> Result<Inventory> {
     if !full.character.is_empty() { inv.character = full.character; }
     if !full.stage.is_empty() { inv.stage = full.stage; }
     if !full.extra.is_empty() { inv.extra = full.extra; }
+    if !full.music.is_empty() { inv.music = full.music; }
     Ok(inv)
 }
 

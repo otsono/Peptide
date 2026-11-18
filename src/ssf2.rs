@@ -763,9 +763,11 @@ fn cmd_stage(args: &[String]) -> Result<()> {
 
     // print the parsed model (the phase-2 exit criteria: platforms + bounds + spawns).
     println!("stage '{}' \"{}\" (from {})", model.id, model.display_name, target.display());
-    if !model.fm_music.is_empty() {
-        println!("  music: {} (FM){}", model.fm_music.join(", "),
-            if model.ssf2_music.is_empty() { String::new() } else { format!("  [SSF2: {}]", model.ssf2_music.join(", ")) });
+    // (its own tracks, converted with it; a public Fraymakers track where it names none)
+    if !model.ssf2_music.is_empty() {
+        println!("  music: {} (its own, converted)", model.ssf2_music.join(", "));
+    } else if !model.fm_music.is_empty() {
+        println!("  music: {} (a public Fraymakers track: it names none)", model.fm_music.join(", "));
     }
     if let Some(f) = model.main_floor() {
         println!("  main floor: x[{:.1},{:.1}] top y={:.1} (w={:.1})", f.rect.left(), f.rect.right(), f.rect.top(), f.rect.w);

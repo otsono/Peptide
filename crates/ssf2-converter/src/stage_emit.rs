@@ -670,7 +670,33 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let mut boot = StageTables { objects_declared: model.hazards.len(), ..Default::default() };
     let bg_entries = emit_bg_elements(model, &promoted_bg, &lib, &mut plan, &mut boot, &carriers, &carried)?;
 
-    write_json(&lib.join("manifest.json"), &build_manifest(model, &[hazard_entries.clone(), bg_entries.clone(), lib_entries.clone()].concat(), &structure_contents))?;
+    // ITS OWN MUSIC: each track the source names, out of the package the game keeps it in, as
+    // Ogg Vorbis in its audio and a `music` content of its own (song, artist, loop point), the
+    // way a custom stage ships a track
+    let mut tracks: Vec<Value> = Vec::new();
+    for id in &model.ssf2_music {
+        let Some(t) = crate::sound_extractor::music_track(id) else {
+            log::warn!("the stage names the track '{id}', which no package of the game carries");
+            continue;
+        };
+        let audio = lib.join("audio");
+        std::fs::create_dir_all(&audio)?;
+        if let Err(e) = crate::sound_extractor::convert_to_ogg(&t.sound, &audio.join(format!("{id}.ogg"))) {
+            log::warn!("the stage's track '{id}' does not convert: {e}");
+            continue;
+        }
+        write_json(&audio.join(format!("{id}.ogg.meta")), &json!({
+            "export": true, "guid": det_uuid(&format!("stage::music::{}::{id}", model.id)), "id": id,
+            "pluginMetadata": {}, "plugins": [], "tags": [], "version": 1
+        }))?;
+        log::info!("the stage's track '{id}' ({}, {:.0}s, loops at {}ms) converted", t.title, t.sound.duration_secs(), t.loop_ms);
+        tracks.push(json!({
+            "id": id, "name": t.title, "title": t.title, "artist": t.artist,
+            "description": format!("{} from Super Smash Flash 2", t.title),
+            "type": "music", "audioId": id, "loopPoint": t.loop_ms.round() as i64
+        }));
+    }
+    write_json(&lib.join("manifest.json"), &build_manifest(model, &[hazard_entries.clone(), bg_entries.clone(), lib_entries.clone()].concat(), &structure_contents, &tracks))?;
     write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
 
     let scripts = lib.join("scripts").join("stage");
@@ -5211,14 +5237,16 @@ fn hazard_boot(model: &StageModel, plan: &mut Vec<Value>) -> Vec<BootObject> {
     out
 }
 
-fn build_manifest(model: &StageModel, hazard_entries: &[Value], structure_entries: &[Value]) -> Value {
+fn build_manifest(model: &StageModel, hazard_entries: &[Value], structure_entries: &[Value], tracks: &[Value]) -> Value {
     let id = &model.id;
-    // a match needs at least one music track to start, and it must be a real public FM bgm
-    // (the SSF2 soundtrack isn't shipped with the engine). `fm_music` is the override-map
-    // pick or the configured default; the original SSF2 track ids go in the description.
-    let music: Vec<Value> = model.fm_music.iter().map(|bgm| json!({
-        "namespace": "public", "resourceId": bgm, "contentId": bgm
-    })).collect();
+    // its music: its own tracks, converted (`tracks`, contents of this resource); where none
+    // converted, a public Fraymakers track (`fm_music`: the override map's pick or the default),
+    // as a match needs one to start
+    let music: Vec<Value> = if !tracks.is_empty() {
+        tracks.iter().map(|t| json!({ "namespace": "local", "resourceId": id, "contentId": t["id"] })).collect()
+    } else {
+        model.fm_music.iter().map(|bgm| json!({ "namespace": "public", "resourceId": bgm, "contentId": bgm })).collect()
+    };
     let mut description = format!("{} — converted from Super Smash Flash 2", model.display_name);
     if let Some(series) = &model.series { description.push_str(&format!(" ({series})")); }
     if !model.ssf2_music.is_empty() {
@@ -5238,6 +5266,7 @@ fn build_manifest(model: &StageModel, hazard_entries: &[Value], structure_entrie
     })];
     content.extend(hazard_entries.iter().cloned());
     content.extend(structure_entries.iter().cloned());
+    content.extend(tracks.iter().cloned());
     json!({ "resourceId": id, "content": content })
 }
 

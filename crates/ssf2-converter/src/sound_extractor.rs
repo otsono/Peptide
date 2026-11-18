@@ -453,3 +453,48 @@ pub fn pull_shared_sounds(
     }
     got
 }
+
+/// One of the game's music tracks, as its own package declares it: the sound, its song name and
+/// artist, and where it loops back to once it ends (milliseconds into it; 0 the start).
+pub struct MusicTrack {
+    pub sound: SoundEntry,
+    pub title: String,
+    pub artist: String,
+    pub loop_ms: f64,
+}
+
+/// The track a stage names by id (`bgm_battlefield`), read out of the package the game keeps it
+/// in: the longest sound there, and what the package registers of it (`musicLoop`, `id3`).
+pub fn music_track(id: &str) -> Option<MusicTrack> {
+    let (entry, movie) = crate::shared_packages::music_package(id)?;
+    let buf = swf::decompress_swf(&movie[..]).ok()?;
+    let parsed = swf::parse_swf(&buf).ok()?;
+    let sound = parse_sounds(&parsed).into_iter().max_by(|a, b| a.duration_secs().total_cmp(&b.duration_secs()))?;
+    // (what its own code registers, read off its methods as they decompile)
+    let mut code = String::new();
+    if let Ok(sp) = crate::swf_parser::parse(&movie) {
+        for b in &sp.abc_blocks {
+            let Ok(abc) = crate::abc_parser::parse(b) else { continue };
+            for body in &abc.method_bodies { code.push_str(&crate::decompiler::decompile_method(body, &abc, "m", &[])); }
+        }
+    }
+    let loop_ms = crate::re!(r#"register\("musicLoop",\s*(-?[\d.]+)\)"#).captures(&code).and_then(|c| c[1].parse().ok()).unwrap_or(0.0);
+    let field = |k: &str| crate::dyn_re(&format!(r#"{k}:\s*"([^"]*)""#)).captures(&code).map(|c| c[1].to_string());
+    let title = field("songName").filter(|s| !s.is_empty()).or_else(|| (!entry.name.is_empty()).then(|| entry.name.clone())).unwrap_or_else(|| id.to_string());
+    Some(MusicTrack { sound, title, artist: field("artist").unwrap_or_default(), loop_ms })
+}
+
+/// A sound written as Ogg Vorbis (a track is minutes long: as wav it would be tens of megabytes)
+pub fn convert_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
+    let wav = out_path.with_extension("tmp.wav");
+    convert_to_wav(entry, &wav)?;
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-i"]).arg(&wav)
+        .args(["-vn", "-ac", "2", "-c:a", "vorbis", "-strict", "-2", "-q:a", "5"])
+        .arg(out_path)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status()?;
+    let _ = std::fs::remove_file(&wav);
+    if !status.success() { bail!("ffmpeg failed writing '{}' as Ogg Vorbis", entry.name); }
+    Ok(())
+}
