@@ -336,7 +336,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let mut cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in f.pieces { if !p.label.is_empty() && attacks.get(&p.label).is_some() { cases.entry(p.label.clone()).or_default().push(compile::quote(&p.fm_name)); } }
     let mut keys: BTreeSet<String> = w.stat_keys.iter().filter(|k| !k.contains(':') && !k.ends_with('*')).cloned().collect();
-    for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate"] { keys.insert(k.into()); }
+    for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate", "allowFastFall"] { keys.insert(k.into()); }
     if blocks.contains("jump_in_attack") { keys.insert("allowJump".into()); }
     let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround"];
     // (each animation carries what the source says of it as its metadata: the label it shows, the
@@ -477,7 +477,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
-    let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into()];
+    let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into(), "fastFallFrame();".into()];
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("jump_in_attack") { update.push("jumpInAttackFrame();".into()); }

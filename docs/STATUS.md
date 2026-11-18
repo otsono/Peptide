@@ -59,6 +59,13 @@ length and go the wrong way. what it has settled:
   `onlyAffectsAir`), is judged as it connects: one that does not fit the fighter hands the hit to
   the attack's box that does. this engine's own condition drops the hit on the first box it
   rejects, so sandbag's down air (a box for each) hit no one.
+- an attack in the air fast-falls on a press down once it is no longer rising, unless it states
+  `allowFastFall` false, as the source's do (sandbag's air down special drops at his fast-fall
+  speed until its own code holds him; it starts a source frame later here, the engine moving him
+  on the special's first frame before its code stops his rise).
+- a box's `hitLag` below zero is a share of the hitstun the launch works out (-1.1 is 110%): a
+  converted fighter it hits works its hitstun out the source's way with that share, and the box
+  states it as this engine's own negative `hitstun` for any other.
 - an x speed a fighter's code writes with no second argument is world space and is turned the way
   the fighter faces; one written `false`, a zero, or one worked out from the speed the engine
   reports is along its facing already (sandbag's air down special dashes the way it is held,

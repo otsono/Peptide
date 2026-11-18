@@ -56,6 +56,21 @@ function attackWrite(k, v) {
 
 // every frame: an attack's start and end, on the frame they happen
 var attackTurning = false;
+// a fast fall inside an attack: the source lets one off the floor fall at its fast-fall speed on
+// a press down, unless the attack says it may not (`allowFastFall`, true unless stated), once it is
+// no longer rising (sandbag's air down special drops at it until its own code holds him)
+// (a press as the attack starts counts: the state it presses into begins a frame after the press)
+var downAt = self.makeInt(-100);
+function fastFallFrame() {
+	var p = self.getPressedControls();
+	if (p != null && p.DOWN == true) downAt.set(frames.get());
+	if (!self.inStateGroup(CStateGroup.ATTACK) || self.isOnFloor()) return;
+	if (frames.get() - downAt.get() > 4) return;
+	if (attackStat("allowFastFall", attackMeta().allowFastFall) == false) return;
+	var fast = self.getCharacterStat("fastFallSpeed");
+	if (fast == null || !(fast > 0) || self.getYSpeed() < 0 || self.getYSpeed() >= fast) return;
+	self.setYSpeed(fast);
+}
 function attackFrame() {
 	// (what runs as one ends reads that one's stats: it is still the attack it is in)
 	if (attackTurning) return;

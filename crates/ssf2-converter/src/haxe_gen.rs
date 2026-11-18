@@ -684,7 +684,14 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from
             .replace("{{knockback_growth}}", &flag("knockbackGrowth").unwrap_or_else(|| kb("knockbackGrowth", hb.knockback_growth)))
             .replace("{{hitstop}}", &flag("hitstop").unwrap_or_else(|| hitstop.to_string()))
             .replace("{{self_hitstop}}", &flag("selfHitstop").unwrap_or_else(|| self_hitstop.to_string())));
-        if hitstun != -1 {
+        // (a hitstun the source states as a share of the one the launch works out, `hitLag` -1.1 for
+        // 110%, is the same here: this engine reads a negative hitstun as that multiplier)
+        let share = hb_cfg.keys_for("hitstun").iter().find_map(|k| hb.raw.get(k.as_str()).copied())
+            .filter(|l| *l < 0.0 && *l != -1.0);
+        if let Some(l) = share {
+            out.push_str(&req("character.stats.hitbox_field_hitstun", &t.hitbox_field_hitstun)
+                .replace("{{hitstun}}", &fmt_num(l)));
+        } else if hitstun != -1 {
             out.push_str(&req("character.stats.hitbox_field_hitstun", &t.hitbox_field_hitstun)
                 .replace("{{hitstun}}", &hitstun.to_string()));
         }
@@ -3246,6 +3253,8 @@ pub(crate) fn generate_projectile_hitbox_stats(
                     let raw = best.unwrap_or(0.0);
                     let freeze = matches!(field.fm_field.as_str(), "hitstop" | "selfHitstop");
                     let v = if freeze && raw == 0.0 { 0.0 }
+                        // (a hitstun stated as a share of the worked-out one is that multiplier here too)
+                        else if field.fm_field == "hitstun" && raw < 0.0 && raw != -1.0 { raw }
                         else if matches!(field.fm_field.as_str(), "hitstop" | "selfHitstop" | "hitstun")
                         && (raw <= 0.0 || raw == 255.0) { -1.0 } else { v };
                     parts.push(format!("{}: {}", field.fm_field, fmt_num(v)));
