@@ -1874,7 +1874,11 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                     let mat = placed_mat(po, disp.get(&po.depth).map(|e| e.2));
                     match &po.action {
                         swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
-                            if let Some(sname) = symbols.get(cid) {
+                            if let (true, Some(img)) = (symbols.contains_key(cid), img_result.images.get(cid)) {
+                                // a named picture placed as itself: under the name it was extracted
+                                // as (a borrowed package's pictures are renamed into this project)
+                                disp.insert(po.depth, (*cid, img.symbol_name.clone(), mat));
+                            } else if let Some(sname) = symbols.get(cid) {
                                 // Named symbol
                                 disp.insert(po.depth, (*cid, sname.clone(), mat));
                             } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
@@ -2023,8 +2027,10 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                             // dangling imageAsset (no PNG is ever written for it).
                             unnamed_placements.insert(po.depth, (*cid, mat, cur_frame, po.ratio));
                         } else if let Some(sname) = named {
-                            // Named bitmap/shape placed directly → an image.
-                            disp.insert(po.depth, (*cid, sname.clone(), mat));
+                            // Named bitmap/shape placed directly → an image, under the name it was
+                            // extracted as (a borrowed package's pictures are renamed into this project)
+                            let name = img_result.images.get(cid).map(|i| i.symbol_name.clone()).unwrap_or_else(|| sname.clone());
+                            disp.insert(po.depth, (*cid, name, mat));
                         } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
                             // Direct shape placement with bitmap fill: the picture at the fill's own
                             // offset and scale (an explosion grows its picture by its fill)

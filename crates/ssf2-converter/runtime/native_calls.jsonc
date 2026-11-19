@@ -649,7 +649,9 @@
   "initialize": "null",
   "update": "null",
   "getSizeStatus": "0",
-  "toBarrel": {"code": "null", "returns": "object", "gap": "toBarrel: a fighter carried inside a barrel"},
+  // a fighter shut in a barrel: out of its own control (the engine's disabled state) until the
+  // stage's code lets it go; the stage holds it, hides it and moves it itself
+  "toBarrel": {"code": "if ({self}.getType() == EntityType.CHARACTER) {self}.toState(CState.DISABLED)", "returns": "object"},
   // every projectile in the match
   "PeptideAPI.getProjectiles": { "code": "match.getProjectiles()", "returns": "object" },
   // the game's own match and progress calls, which nothing here has: a fighter put in the match by

@@ -2465,6 +2465,11 @@ impl<'o, 'a> Writer<'o, 'a> {
             if !id.contains('.') { self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;")); }
             return Ok(format!("{id}_isMade"));
         }
+        // (an engine call's name read as a value and tested, not called: the method itself, which
+        // the source's test always finds there)
+        if let Expr::Member(_, n) = e {
+            if calls().rows.contains_key(n.as_str()) && self.expr(e).is_err() { return Ok("true".into()) }
+        }
         // (a test of `a && b` is the two tests)
         let was = std::mem::replace(&mut self.testing, matches!(e, Expr::And(..) | Expr::Or(..)));
         let r = self.expr(e);
@@ -2477,6 +2482,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             Ty::Num => format!("{t} != 0"),
             // (the object itself always is)
             Ty::Object | Ty::Body if t == "self" => "true".into(),
+            // (an engine object its code keeps, tested: there and not yet gone. the source's engine
+            // lets code go on calling one it destroyed; this one stops the frame on the first call)
+            Ty::Object if crate::re!(r"^[A-Za-z_][\w.]*(?:\.get\(\))?$").is_match(&t) && t != "self" =>
+                format!("({t} != null && ({t}.isDisposed == null || !{t}.isDisposed()))"),
             Ty::Object | Ty::Rect | Ty::Body | Ty::Controls => format!("{t} != null"),
             Ty::Str => format!("({t} != null && {t} != \"\")"),
             Ty::Any => format!("({t} != null && {t} != false && {t} != 0)"),
@@ -5399,6 +5408,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("startNamed({l})"), Ty::Bool));
             }
             ("forceAttack" | "startAttack", [Expr::Str(label), ..]) if mine && !self.o.fighter && !self.o.item => {
+                // (asked by a clip shown inside its art, which has no such label: the attack is the
+                // object's, the label of the clip the object draws with)
+                let class = self.o.model.classes.get(&self.class);
+                let has = class.and_then(|c| c.symbol).and_then(|s| self.o.model.sprites.get(&s)).map(|sp| sp.labels.iter().any(|(_, l)| l == label));
+                let root = self.o.model.class_of(self.o.root).and_then(|c| self.o.jumps.get(&c.name)).and_then(|j| j.labels.get(label.as_str())).cloned();
+                if let (Some(false), Some((anim, start))) = (has, root) {
+                    let t = if start { self.play_start(&anim)? } else { self.play_label_in(&anim, label) };
+                    return Ok((t.trim_end_matches(';').to_string(), Ty::Any));
+                }
                 return Ok((self.jump(label)?.trim_end_matches(';').to_string(), Ty::Any));
             }
             // (by a label worked out as it runs: each label its clip has, jumped to as written)
@@ -5491,7 +5509,11 @@ impl<'o, 'a> Writer<'o, 'a> {
             // another object's attack stat the engine keeps natively, read back from its own field
             // a stat its owner states: what its code set it to since, else what it declares
             ("getCharacterStat", [Expr::Str(k)]) if self.owners.contains(who) => {
-                let declared = (self.o.owner_declares)(k).ok_or_else(|| format!("reads its owner's stat {k}, which its owner does not state"))?;
+                // (one its owner never states: read as nothing set, 0, and said in its gaps)
+                let Some(declared) = (self.o.owner_declares)(k) else {
+                    self.gaps.insert(format!("reads its owner's stat {k}, which its owner does not state: read as 0"));
+                    return Ok(("0".into(), Ty::Num));
+                };
                 let name = format!("ownerStat_{}", ident(k));
                 if !self.helpers.contains_key(&name) {
                     let def = helper(self.o.runtime, "helpers", "owner_stat", &name, &[("STAT", k.clone()), ("DECLARED", declared)], &[])?;
