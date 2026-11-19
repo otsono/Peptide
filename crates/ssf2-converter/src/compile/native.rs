@@ -1341,7 +1341,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         for p in &parts {
             let id = part_id(&p.name);
             for (anim, art, x, y, r, sx, sy) in &p.placed {
-                by_anim.entry(anim.as_str()).or_default().push(format!("placePart({id}, {id}On, {}, {}, {}, {}, {}, {});", quote(art), number(*x), number(*y), number(*r), number(*sx), number(*sy)));
+                by_anim.entry(anim.as_str()).or_default().push(format!("placePart({id}, {id}On, {}, {}, {}, {}, {}, {}, {});", quote(art), number(*x), number(*y), number(*r), number(*sx), number(*sy), quote(&p.name)));
             }
         }
         let mut lines = Vec::new();
@@ -6985,9 +6985,12 @@ self.playFrameLabel({})", quote(f))); }
             if cases.iter().any(|c| c.starts_with(&format!("\t\tcase {q}:"))) { continue }
             cases.push(format!("\t\tcase {q}: names = [{}];", names.iter().map(|x| quote(x)).collect::<Vec<_>>().join(", ")));
         }
+        // (one drawn apart as a part: the look its part is placed with, `partLook`)
+        let part_names: Vec<String> = self.o.parts.iter().filter(|p| !p.placed.is_empty()).map(|p| quote(&p.name)).collect();
+        let part_pick = if part_names.is_empty() { String::new() } else { format!("[{}].indexOf(n) >= 0 ? partLook(n) : ", part_names.join(", ")) };
         self.kept.insert("stanceKidRecs".into(), "// the clips its animations' clip places under names, as records (drawn into its art)\nvar stanceKidRecs = self.makeObject(null);".into());
-        self.gaps.insert("turns the clips its clip places, read by their place in it, whose art is drawn into the fighter's".into());
-        self.helpers.insert(f.clone(), format!("// the clips the clip its animation shows places under names, as records kept by name\nfunction stanceKids() {{\n\tvar names = [];\n\tswitch (self.getAnimation()) {{\n{}\n\t}}\n\tif (stanceKidRecs.get() == null) stanceKidRecs.set(new haxe.ds.StringMap());\n\tvar m = stanceKidRecs.get();\n\tvar out = [];\n\tfor (n in names) {{\n\t\tif (!m.exists(n)) m.set(n, {{ name: n, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, rotation: 0.0, visible: true }});\n\t\tout.push(m.get(n));\n\t}}\n\treturn out;\n}}", cases.join("\n")));
+        if part_names.is_empty() { self.gaps.insert("turns the clips its clip places, read by their place in it, whose art is drawn into the fighter's".into()); }
+        self.helpers.insert(f.clone(), format!("// the clips the clip its animation shows places under names, as records kept by name\nfunction stanceKids() {{\n\tvar names = [];\n\tswitch (self.getAnimation()) {{\n{}\n\t}}\n\tif (stanceKidRecs.get() == null) stanceKidRecs.set(new haxe.ds.StringMap());\n\tvar m = stanceKidRecs.get();\n\tvar out = [];\n\tfor (n in names) {{\n\t\tif (!m.exists(n)) m.set(n, {}{{ name: n, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, rotation: 0.0, visible: true }});\n\t\tout.push(m.get(n));\n\t}}\n\treturn out;\n}}", cases.join("\n"), part_pick));
         f
     }
 

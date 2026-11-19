@@ -13,7 +13,16 @@ function placeParts() {
 	// {cases}
 }
 // one of its parts shown at its place in the animation: the vfx made as it is first shown
-function placePart(part, partOn, art, ox, oy, rotation, sx, sy) {
+// what its code set on a part it reached by its place (`getChildAt`): shown or not, and its
+// size, kept until an animation that places it starts again (the source's clip is placed anew)
+var partLooks = [];
+function partLook(name) {
+	for (l in partLooks) if (l.name == name) return l;
+	var l = { name: name, visible: true, scaleX: 1.0, scaleY: 1.0, alpha: 1.0 };
+	partLooks.push(l);
+	return l;
+}
+function placePart(part, partOn, art, ox, oy, rotation, sx, sy, ?name) {
 	var anim = self.getAnimation();
 	var v = part.get();
 	if (v == null || v.isDisposed()) {
@@ -22,7 +31,8 @@ function placePart(part, partOn, art, ox, oy, rotation, sx, sy) {
 		partOn.set(null);
 	}
 	if (v == null) return;
-	if (partOn.get() != anim) { partOn.set(anim); v.playAnimation(art); v.resume(); }
+	var look = name == null ? null : partLook(name);
+	if (partOn.get() != anim) { partOn.set(anim); v.playAnimation(art); v.resume(); if (look != null) { look.visible = true; look.scaleX = 1.0; look.scaleY = 1.0; look.alpha = 1.0; } }
 	var facing = self.isFacingRight() ? 1 : -1;
 	var turn = self.getRotation() * Math.PI / 180;
 	var dx = ox * SIZE;
@@ -31,9 +41,10 @@ function placePart(part, partOn, art, ox, oy, rotation, sx, sy) {
 	v.setY(self.getY() + dx * Math.sin(turn) + dy * Math.cos(turn));
 	if (facing < 0) v.faceLeft(); else v.faceRight();
 	v.setRotation(self.getRotation() + facing * rotation);
-	v.setScaleX(sx);
-	v.setScaleY(sy);
-	v.setVisible(true);
+	v.setScaleX(sx * (look == null ? 1 : look.scaleX));
+	v.setScaleY(sy * (look == null ? 1 : look.scaleY));
+	v.setVisible(look == null || look.visible != false);
+	if (look != null) v.setAlpha(look.alpha);
 }
 // one of its parts sent to a frame by its code: placed first, so an animation that has just
 // started (whose first frame's code runs before its update) starts the part over before the jump

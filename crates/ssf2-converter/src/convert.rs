@@ -926,8 +926,13 @@ fn process_character(
             char_data.scripts.iter().any(|sc| re.captures_iter(&sc.code)
                 .any(|c| !matches!(c[2].trim(), "null" | "undefined")))
         };
+        // (the clip classes whose own code walks the children of the clip the animation shows by place)
+        let walkers: std::collections::BTreeSet<String> = crate::projectile_gen::parse_abcs(parsed_swf).iter().flat_map(|abc| abc.classes.iter()
+            .filter(|c| { let ms = abc_parser::extract_class_methods(abc, &c.name); ms.values().any(|m| m.contains("getStanceMC()")) && ms.values().any(|m| m.contains(".getChildAt(")) })
+            .map(|c| c.name.clone()).collect::<Vec<_>>()).collect();
         for (sid, label) in &roots {
             let Some(fm) = char_data.ssf2_to_fm_anim.get(label).cloned() else { continue };
+            let walks_children = swf.symbols.get(sid).is_some_and(|n| walkers.contains(n));
             let found = image_extractor::named_descendant_paths(parsed_swf, *sid);
             for (parent, child) in found.iter().cloned() {
                 if taken.contains(&child.name) && filled(&child.name) { continue }
@@ -941,7 +946,10 @@ fn process_character(
                 // reached as the fighter's own field, or as the stance clip's (`getStanceMC().waftloc`)
                 // or turned by its name inside a clip the stance places (`stance.aura1.cspark.gotoAndStop(n)`)
                 let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){0}\b|\.{0}\.(?:gotoAndStop|gotoAndPlay|play|stop|nextFrame|prevFrame)\(", regex::escape(&orig)));
-                if !re.is_match(&code) { continue }
+                // (or a clip its stance places that the code reaches by its place, walking the
+                // stance's children: game & watch's judge shows the card it drew and hides the rest)
+                let by_place = walks_children && parent.is_empty() && sprite_parser::BoxType::from_instance_name(&orig).is_none();
+                if !re.is_match(&code) && !by_place { continue }
                 if out.iter().any(|(n, a, _)| *n == key && *a == fm) { continue }
                 out.push((key, fm.clone(), child));
             }
