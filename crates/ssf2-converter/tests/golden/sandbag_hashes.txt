@@ -57,7 +57,7 @@ b4df9f509047e72cbc49176a423c1f4e16bfb786ad8384998f8ffb258b6d2e4e  ./library/scri
 7567b93bf6cb189938a804271ebeb70b8ac8dea4c0d749077273b7e7758fd36d  ./library/scripts/Projectile/SandbagHudStats.hx.meta
 23f9df12be9a8868f15b0aebae62128abae7d58e191be52c9a1013664281c5d8  ./library/scripts/Sandbag/AiScript.hx
 8eae1aab3deb8348ae5a3cd24d7085686a2042564f683522076cb3da7f0b224f  ./library/scripts/Sandbag/AiScript.hx.meta
-680c9202677f13e2a19ecf9e47ceaa397a8ea25b2ff645178aa6cc2c01789e6c  ./library/scripts/Sandbag/AnimationStats.hx
+3877848646aa037950fc0d6b7a4b59c0579084204f15671172939aad74c1202e  ./library/scripts/Sandbag/AnimationStats.hx
 ac46cba6bdf94fe35a593c1cf9481a8e16a2629a75b7cb05a821276cc13460cc  ./library/scripts/Sandbag/AnimationStats.hx.meta
 d90d88034c2327bcec74e2bd71b045e51269ef4a5d8c923d6acb4bd11716538a  ./library/scripts/Sandbag/CharacterStats.hx
 802ff6d02189790162a4d670f4725be84fa29e7257bc5e1d339922a843b4efba  ./library/scripts/Sandbag/CharacterStats.hx.meta

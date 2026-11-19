@@ -344,7 +344,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate", "allowFastFall", "cancelWhenAirborne"] { keys.insert(k.into()); }
     if blocks.contains("jump_in_attack") { keys.insert("allowJump".into()); }
     if blocks.contains("air_cancel") { for k in cancel_keys { keys.insert(k.into()); } }
-    let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround"];
+    // (and what a box declares that this engine keeps no field for, which its code may read back)
+    let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround",
+        "paralysis", "priority", "shieldDamage"];
     // (each animation carries what the source says of it as its metadata: the label it shows, the
     // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
     // engine has no stat for, and its boxes' by the source's box number)

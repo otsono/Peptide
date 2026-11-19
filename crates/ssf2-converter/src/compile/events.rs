@@ -70,7 +70,7 @@ pub fn named(runtime: &super::runtime::Runtime, e: &crate::model::ast::Expr) -> 
 /// the runtime. a listener for one is never told, on either path
 pub fn raised_by_nothing(runtime: &super::runtime::Runtime, name: &str) -> bool {
     let t = table();
-    let told_by_code = ["charAttackComplete", "projCollide", "projCollideOwner", "projDestroyed", "itemDestroyed", "enemyDestroyed"];
+    let told_by_code = ["charAttackComplete", "projCollide", "projCollideOwner", "projDestroyed", "itemDestroyed", "enemyDestroyed", "charSelfDestruct", "itemTossed"];
     !(t.engine.contains_key(name) || t.state.contains_key(name) || t.item.contains_key(name) || t.game.iter().any(|g| g == name)
         || told_by_code.contains(&name)
         || runtime.files.values().any(|f| f.contains(&format!("\"{name}\""))))

@@ -98,6 +98,8 @@ function letGo(dropped) {
 	self.updateGameObjectStats({ ghost: GHOST, gravity: GRAVITY, terminalVelocity: FALL_CAP, deathBoundsDestroy: true, aerialFriction: 0 });
 	itemTo(2);
 	tell(tossListeners, { holder: who, dropped: dropped });
+	// (and the holder's own listeners for it, `itemTossed` heard on the fighter)
+	if (who != null && who.exports != null && who.exports.__tossHeard != null) for (l in who.exports.__tossHeard.copy()) l({ holder: who, dropped: dropped });
 }
 // thrown by the holder this handler holds it for, the way they hold the stick: up, down, back or ahead
 // thrown the way its holder holds the stick (a little up along its facing, as the source's forward

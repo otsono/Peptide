@@ -1459,3 +1459,25 @@ function pinToScreen() {
 	self.setScaleX(1 / (z * SIZE));
 	self.setScaleY(1 / (z * SIZE));
 }
+
+// ---- selfDestructHeard
+// a fighter knocked out by its own fall (`charSelfDestruct`): the engine's knock-out, told only when
+// the fighter's count of self-destructs went up with it (the engine counts it before it tells)
+function selfDestructHeard(c, h) {
+	if (c == null || c.getScore == null) return;
+	if (c.exports.__sdListeners == null) {
+		c.exports.__sdListeners = [];
+		c.exports.__sdSeen = c.getScore().selfDestructs;
+		c.addEventListener(CharacterEvent.KNOCK_OUT, function(e) {
+			var n = c.getScore().selfDestructs;
+			var was = c.exports.__sdSeen;
+			c.exports.__sdSeen = n;
+			if (n > was) for (l in c.exports.__sdListeners.copy()) l(e);
+		}, { persistent: true });
+	}
+	c.exports.__sdListeners.remove(h);
+	c.exports.__sdListeners.push(h);
+}
+function selfDestructDrop(c, h) {
+	if (c != null && c.exports != null && c.exports.__sdListeners != null) c.exports.__sdListeners.remove(h);
+}

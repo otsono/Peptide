@@ -4733,12 +4733,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             None | Some(Expr::Null) | Some(Expr::Undefined) => {}
             Some(Expr::Object(kv)) => for (k, v) in kv {
                 let Expr::Str(k) = k else { return Err("makes an effect with options named as it runs".into()) };
-                // (an effect faces with its maker here, as on the runtime: one the source leaves
-                // unturned is noted)
-                if k == "flip" {
-                    if !matches!(v, Expr::Bool(true)) { self.gaps.insert("makes an effect that may not turn with it, which this engine turns with its maker".into()); }
-                    continue;
-                }
+                // (whether it turns with its maker, `flip`: the engine's `flipWith`)
+                if k == "flip" { opts.insert(k.clone(), v); continue; }
                 // (an option with no form here is left out and said)
                 if !matches!(k.as_str(), "x" | "y" | "scaleX" | "scaleY" | "rotation" | "behind" | "parentLock" | "syncHitStun" | "flipOnX" | "loop" | "resize" | "absolute") {
                     self.gaps.insert(format!("names an effect option {k}, which is not ported"));
@@ -4774,6 +4770,13 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(l) = &behind { st.push(format!("layer: {l}")); }
         if resized && !locked { st.push("resizeWith: true".into()); }
         if looped { st.retain(|x| !x.starts_with("timeout:")); st.push("loop: true".into()); }
+        // (one that does not turn with its maker, or turns as a test worked out as it runs says)
+        let unturned = match opts.get("flip") {
+            None | Some(Expr::Bool(true)) => None,
+            Some(Expr::Bool(false)) => Some("false".to_string()),
+            Some(e) => Some(self.test(e)?),
+        };
+        if let (Some(t), false) = (&unturned, locked) { st.push(format!("flipWith: {t}")); }
         let mut after = Vec::new();
         if locked {
             // riding the object, which mirrors the offset with it
@@ -5361,6 +5364,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // (its own box's, or one of an object it made: an item it holds)
             // (one this engine keeps none of reads as nothing, as its writes land on nothing)
+            // (a fighter's own box's: what the box declares, which its attack's metadata carries,
+            // `boxMeta`; a box declaring none reads as nothing)
+            ("getHitboxStat", [i, Expr::Str(k)]) if mine && self.o.fighter && crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) => {
+                let i = self.box_ix(i)?;
+                self.blocks.insert("hits".into());
+                return Ok((format!("boxMeta({} + 1).{k}", paren(&i)), Ty::Any));
+            }
             ("getHitboxStat", [_, Expr::Str(k)]) if (mine || self.o.fighter) && crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) => {
                 self.gaps.insert(format!("reads its box's {k}, which this engine keeps none of"));
                 return Ok(("null".into(), Ty::Any));
@@ -6375,6 +6385,23 @@ self.playFrameLabel({})", quote(f))); }
             } else {
                 format!("if ({who} != null && !{who}.isDisposed() && {id}.get() >= 0) {who}.removeTimer({id}.get());\n{id}.set(-1)")
             }, Ty::Any));
+        }
+        // an item it holds thrown (`itemTossed` heard on the fighter): told by the item's handler as
+        // it lets the item go
+        if name == "itemTossed" && !(self.o.item && who == "self") {
+            let h = self.handler(handler)?;
+            return Ok((if m == "addEventListener" {
+                format!("if ({who} != null) {{ if ({who}.exports.__tossHeard == null) {who}.exports.__tossHeard = []; {who}.exports.__tossHeard.remove({h}); {who}.exports.__tossHeard.push({h}); }}")
+            } else {
+                format!("if ({who} != null && {who}.exports.__tossHeard != null) {who}.exports.__tossHeard.remove({h})")
+            }, Ty::Any));
+        }
+        // a fighter knocked out by its own fall, with no one's hit behind it: the engine's knock-out,
+        // told only when the fighter's own count of them goes up (`selfDestructHeard`)
+        if name == "charSelfDestruct" {
+            let h = self.handler(handler)?;
+            self.util("selfDestructHeard")?;
+            return Ok((if m == "addEventListener" { format!("selfDestructHeard({who}, {h})") } else { format!("selfDestructDrop({who}, {h})") }, Ty::Any));
         }
         let ends = (name == "projDestroyed" || (self.o.item && name == "itemDestroyed")) && who == "self";
         let table = super::events::table();
