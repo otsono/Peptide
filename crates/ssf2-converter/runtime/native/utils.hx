@@ -136,6 +136,8 @@ function numberIn(n, base) {
 // on that object; none (`null`, `false`) takes them off
 var colorFiltersOn = self.makeObject(null);
 function colorFilters(t, o) {
+	// (a copy of a fighter's body, `bodyCopy`: drawn in that fighter's own colours already)
+	if (t != null && t.body != null) return;
 	// (a library clip its code made, a record: its colours are drawn nowhere here)
 	if (t == null || t.isDisposed == null || t.isDisposed()) return;
 	if (colorFiltersOn.get() == null) colorFiltersOn.set(new haxe.ds.StringMap());
@@ -710,8 +712,7 @@ function foeAllowAttack(o, on, anims) {
 		["strong_forward", CharacterActions.STRONG_FORWARD], ["strong_up", CharacterActions.STRONG_UP], ["strong_down", CharacterActions.STRONG_DOWN],
 		["aerial_neutral", CharacterActions.AERIAL_NEUTRAL], ["aerial_forward", CharacterActions.AERIAL_FORWARD], ["aerial_back", CharacterActions.AERIAL_BACK],
 		["aerial_up", CharacterActions.AERIAL_UP], ["aerial_down", CharacterActions.AERIAL_DOWN],
-		["special_neutral", CharacterActions.SPECIAL_NEUTRAL], ["special_side", CharacterActions.SPECIAL_SIDE], ["special_up", CharacterActions.SPECIAL_UP], ["special_down", CharacterActions.SPECIAL_DOWN],
-		["grab", CharacterActions.GRAB]
+		["special_neutral", CharacterActions.SPECIAL_NEUTRAL], ["special_side", CharacterActions.SPECIAL_SIDE], ["special_up", CharacterActions.SPECIAL_UP], ["special_down", CharacterActions.SPECIAL_DOWN]
 	];
 	for (anim in anims) {
 		var best = null;
@@ -1814,3 +1815,61 @@ function partsFollow() {
 		v.pause();
 	}
 }
+
+// ---- bodyCopy
+//: needs clipRecord clipAdd
+//: its cases are each of the source's animation names, as the engine animation it is
+// a copy of a fighter's body its code makes from the fighter's own clip
+// (`getMCByLinkageName(f.getCharacterStat("linkage_id"))`): that fighter's own art, in its own
+// colours, as a record its code places and turns. it is drawn where the clips it was put in place
+// it, off the object that made it (or, put in none, where its code says on the stage), sized as
+// its code sizes it, at the frame its stance is stepped to; a label is the fighter's animation of
+// that name
+var bodiesShown = [];
+function bodyCopy(f) {
+	var r = clipRecord(null);
+	r.body = f;
+	r.gone = false;
+	var made = f == null || f.isDisposed() ? null : f.getGameObjectStat("spriteContent");
+	r.sprite = made == null ? null : Sprite.create(made);
+	if (r.sprite != null) {
+		var shader = f.getCostumeShader();
+		if (shader != null && shader.paletteMap != null) r.sprite.setPalette(shader.paletteMap);
+		match.getStage().getCharactersFrontContainer().addChild(r.sprite);
+		r.sprite.visible = false;
+	}
+	r.stance = { currentFrame: 1, totalFrames: 1,
+		playFrame: function(n) { r.stance.currentFrame = Std.int((n + 1) / 2); },
+		pause: function() {}, resume: function() {} };
+	r.isDisposed = function() { return r.gone; };
+	r.destroy = function() { r.gone = true; if (r.sprite != null) match.getStage().getCharactersFrontContainer().removeChild(r.sprite); bodiesShown.remove(r); };
+	bodiesShown.push(r);
+	if (bodiesShown.length == 1) self.addTimer(1, -1, bodiesFollow, { persistent: true });
+	return r;
+}
+function bodyLabel(r, label, hold) {
+	if (r == null || r.sprite == null) return;
+	var anim = label;
+	switch (label) {
+		// {cases}
+	}
+	if (r.sprite.hasAnimation(anim)) r.sprite.currentAnimation = anim;
+	r.stance.totalFrames = Std.int((r.sprite.totalFrames + 1) / 2);
+	r.stance.currentFrame = 1;
+}
+function bodiesFollow() {
+	for (r in bodiesShown) {
+		var sp = r.sprite;
+		if (sp == null || r.gone) continue;
+		var g = clipGlobal(r, null);
+		var facing = self.isFacingRight() ? 1 : -1;
+		if (r.parentOf == null) { sp.x = g.x * SIZE; sp.y = g.y * SIZE; }
+		else { sp.x = self.getX() + facing * g.x * SIZE; sp.y = self.getY() + g.y * SIZE; }
+		sp.scaleX = (r.scaleX == null ? 1 : r.scaleX) * (r.body != null && !r.body.isDisposed() && !r.body.isFacingRight() ? -1 : 1);
+		sp.scaleY = r.scaleY == null ? 1 : r.scaleY;
+		sp.alpha = r.alpha;
+		sp.visible = r.visible != false && !isDisposedSelf();
+		sp.currentFrame = (r.stance.currentFrame - 1) * 2 + 1;
+	}
+}
+function isDisposedSelf() { return self.isDisposed(); }

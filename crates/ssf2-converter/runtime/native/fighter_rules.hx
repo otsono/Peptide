@@ -320,7 +320,7 @@ function onHitstun(e) {
 }
 function onHitstunOut(e) {
 	if (stunSet.get() || !self.isOnFloor()) return;
-	if (self.inState(CState.HURT_LIGHT) || self.inState(CState.HURT_MEDIUM) || self.inState(CState.HURT_HEAVY)) self.toState(CState.IDLE);
+	if (self.inState(CState.HURT_LIGHT) || self.inState(CState.HURT_MEDIUM) || self.inState(CState.HURT_HEAVY)) self.toState(CState.STAND);
 }
 // a hit aimed down at a standing fighter too weak to bounce it sends it up at the mirrored angle
 function onHitReceived(e) {
@@ -608,8 +608,7 @@ var actionTable = [
 	["strong_forward", CharacterActions.STRONG_FORWARD], ["strong_up", CharacterActions.STRONG_UP], ["strong_down", CharacterActions.STRONG_DOWN],
 	["aerial_neutral", CharacterActions.AERIAL_NEUTRAL], ["aerial_forward", CharacterActions.AERIAL_FORWARD], ["aerial_back", CharacterActions.AERIAL_BACK],
 	["aerial_up", CharacterActions.AERIAL_UP], ["aerial_down", CharacterActions.AERIAL_DOWN],
-	["special_neutral", CharacterActions.SPECIAL_NEUTRAL], ["special_side", CharacterActions.SPECIAL_SIDE], ["special_up", CharacterActions.SPECIAL_UP], ["special_down", CharacterActions.SPECIAL_DOWN],
-	["grab", CharacterActions.GRAB]
+	["special_neutral", CharacterActions.SPECIAL_NEUTRAL], ["special_side", CharacterActions.SPECIAL_SIDE], ["special_up", CharacterActions.SPECIAL_UP], ["special_down", CharacterActions.SPECIAL_DOWN]
 ];
 // the actions the animations of the source's label start (the longest name that begins one)
 function actionsOf(anims) {
@@ -1197,7 +1196,7 @@ function letOut(foe, spat) {
 function powerFrame() {
 	borrowedFrame();
 	if (power.get() != null) {
-		if (self.inState(CState.TAUNT)) { dropPower(); return; }
+		if (self.inState(CState.EMOTE)) { dropPower(); return; }
 		var d = self.getDamage();
 		if (d > powerDamageWas.get()) powerDamageLeft.set(powerDamageLeft.get() - (d - powerDamageWas.get()));
 		powerDamageWas.set(d);

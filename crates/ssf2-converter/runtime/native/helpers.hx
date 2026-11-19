@@ -136,6 +136,8 @@ function effectArt(name) {
 function NAME(effect, label, hold) {
 	// (a clip record drawn as the effect, `screenClip`: its timeline's)
 	if (effect != null && effect.anims != null) { clipGo(effect, label, hold); return; }
+	// (a copy of a fighter's body, `bodyCopy`: the fighter's animation of that name)
+	if (effect != null && effect.body != null) { bodyLabel(effect, label, hold); return; }
 	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	if (effect.hasAnimation(label)) effect.playAnimation(label); else effect.playFrameLabel(label);
 	if (hold) effect.pause(); else effect.resume();

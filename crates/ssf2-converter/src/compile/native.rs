@@ -3502,6 +3502,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.helpers.insert("placedClip".into(), "// a clip its clip places, which its code turns: a record of its look, as its placement starts it\nfunction placedClip(c, x, y, r, sx, sy) {\n\tvar v = c.get();\n\tif (v == null) { v = { x: x, y: y, rotation: r, scaleX: sx, scaleY: sy, alpha: 1, visible: true, currentFrame: 1 }; c.set(v); }\n\treturn v;\n}".into());
             }
             let (x, y, r, sx, sy) = at;
+            // (with the clips it places under names, each a record of its own, as its code reaches them)
+            let sym = self.o.model.classes.get(&self.class).and_then(|c| c.symbol)
+                .and_then(|s| self.o.model.sprites.get(&s)).and_then(|sp| sp.frames.iter().flatten().find(|p| p.name.as_deref() == Some(n)).map(|p| p.char_id));
+            let mut kids = Vec::new();
+            clip_record_of(self.o.model, sym, "v", 0, &mut kids);
+            if !kids.is_empty() {
+                let f = format!("{}__kids", ident(n));
+                if !self.helpers.contains_key(&f) {
+                    self.helpers.insert(f.clone(), format!("// the clips its {n} clip places under names, each a record of its own\nfunction {f}(v) {{\n\tif (v.kids != null && v.kids.length > 0) return v;\n\tif (v.kids == null) v.kids = [];\n{}\n\treturn v;\n}}", kids.iter().map(|l| format!("\t{l}")).collect::<Vec<_>>().join("\n")));
+                }
+                return Ok((format!("{f}(placedClip({id}, {}, {}, {}, {}, {}))", number(x), number(y), number(r), number(sx), number(sy)), Ty::Rect));
+            }
             return Ok((format!("placedClip({id}, {}, {}, {}, {}, {})", number(x), number(y), number(r), number(sx), number(sy)), Ty::Rect));
         }
         if let Some((id, holds)) = self.field(n) {
@@ -3920,6 +3932,12 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a function of `runtime/native/utils.hx`, written once
     fn util(&mut self, name: &str) -> Result<String, String> {
         // (the stage's camera settings, as the conversion declares them)
+        // (the source's animation names, as the engine's: `mappings/character/animations.jsonc`)
+        if name == "bodyCopy" && !self.helpers.contains_key(name) {
+            let cases: Vec<String> = crate::mappings::character_animations().ssf2_to_fm.iter().map(|(k, v)| format!("case {}: anim = {};", quote(k), quote(v))).collect();
+            self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size))], &cases)?);
+            for n in needs(self.o.runtime, name) { self.util(&n)?; }
+        }
         if name == "cameraParameter" && !self.helpers.contains_key(name) {
             let cases: Vec<String> = crate::stage_emit::CAMERA_STATS.iter().map(|(k, v)| format!("case {}: return {};", quote(k), number(*v))).collect();
             self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[], &cases)?);
@@ -4586,6 +4604,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // effect where its code puts it (`screenClip`)
                 (_, "clipByLinkage", [Expr::Str(n)]) if c.contains("PeptideAPI") && self.screen_clip(n).is_some() => {
                     return Ok((self.screen_clip(n).unwrap_or_default(), Ty::Rect));
+                }
+                // a fighter's own clip made by its linkage (`getCharacterStat("linkage_id")`): a copy of its body
+                (_, "clipByLinkage", [Expr::Call(g, a)]) if c.contains("PeptideAPI") && matches!(a.as_slice(), [Expr::Str(k)] if k == "linkage_id")
+                    && matches!(&**g, Expr::Member(_, m) if m == "getCharacterStat") => {
+                    let Expr::Member(f, _) = &**g else { unreachable!() };
+                    let (who, _) = self.expr(f)?;
+                    self.util("bodyCopy")?;
+                    return Ok((format!("bodyCopy({who})"), Ty::Rect));
                 }
                 // a listener on the game for one this engine's match raises: the match's own
                 (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI")
@@ -7650,13 +7676,15 @@ fn own_clip_held(f: &Function) -> Option<Function> {
 /// as a record of its own under that name (a clip its code makes and reaches into, drawn nowhere)
 fn clip_record_of(model: &SourceModel, sym: Option<u16>, at: &str, depth: usize, out: &mut Vec<String>) {
     let Some(sp) = sym.and_then(|s| model.sprites.get(&s)).filter(|_| depth < 4) else { return };
-    let mut named: BTreeMap<String, u16> = BTreeMap::new();
+    let mut named: BTreeMap<String, (u16, f64, f64)> = BTreeMap::new();
     for p in sp.frames.iter().flatten() {
-        if let Some(n) = p.name.as_deref() { named.entry(n.to_string()).or_insert(p.char_id); }
+        if let Some(n) = p.name.as_deref() { named.entry(n.to_string()).or_insert((p.char_id, p.matrix.tx, p.matrix.ty)); }
     }
-    for (n, s) in named.iter().filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+    for (n, (s, x, y)) in named.iter().filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
         let path = format!("{at}.{n}");
-        out.push(format!("{path} = clipRecord(null); {path}.name = {}; {at}.kids.push({path});", quote(n)));
+        // (where its clip first places it)
+        let place = if *x != 0.0 || *y != 0.0 { format!(" {path}.x = {}; {path}.y = {};", number(*x), number(*y)) } else { String::new() };
+        out.push(format!("{path} = clipRecord(null); {path}.name = {};{place} {at}.kids.push({path});", quote(n)));
         clip_record_of(model, Some(*s), &path, depth + 1, out);
     }
 }

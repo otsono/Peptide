@@ -243,7 +243,7 @@ function takeUpFrame(who) {
 	var left = takingUp.get();
 	if (left > 0) takingUp.set(left - 1);
 	if (left > 0 && who.hasAnimation("item_pickup") && who.getAnimation() != "item_pickup" && who.inStateGroup(CStateGroup.ATTACK)) {
-		who.toState(CState.TAUNT);
+		who.toState(CState.EMOTE);
 		who.playAnimation("item_pickup");
 	}
 	var taking = left > 0 || who.getAnimation() == "item_pickup";
@@ -259,7 +259,7 @@ function canTake(c) {
 	if (c.exports != null && c.exports.__heldItem != null && !c.exports.__heldItem.isDisposed()) return false;
 	if (c.inStateGroup(CStateGroup.ATTACK)) return c.getCurrentFrame() <= 1;
 	return !c.inState(CState.SHIELD_IN) && !c.inState(CState.SHIELD_LOOP) && !c.inState(CState.SHIELD_OUT)
-		&& !c.inState(CState.GRAB) && !c.inState(CState.GRAB_HOLD) && !c.inState(CState.LEDGE_HANG);
+		&& !c.inState(CState.GRAB) && !c.inState(CState.GRAB_HOLD) && !c.inState(CState.LEDGE_LOOP) && !c.inState(CState.LEDGE_IN);
 }
 // whether it lies where a fighter can reach it from where it stands
 function within(c) {
@@ -280,7 +280,7 @@ function pickUpBy(c) {
 	// (held in place as a taunt holds it, not an attack: one ended in an attack's state goes on
 	// into the next of its moves, which a holder's hand throws the item off)
 	if (c.hasAnimation("item_pickup")) {
-		c.toState(CState.TAUNT);
+		c.toState(CState.EMOTE);
 		c.playAnimation("item_pickup");
 	}
 	if (own) self.exports.__holder = c;

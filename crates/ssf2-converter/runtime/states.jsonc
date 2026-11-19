@@ -19,16 +19,17 @@
   "FLYING": { "is": ["CState.HURT_HEAVY", "CState.TUMBLE"], "enter": "CState.HURT_HEAVY" },
   "DODGE_ROLL": { "is": ["CState.ROLL"], "enter": "CState.ROLL" },
   "SIDESTEP_DODGE": { "is": ["CState.SPOT_DODGE"], "enter": "CState.SPOT_DODGE" },
-  "LEDGE_HANG": { "is": ["CState.LEDGE_IN", "CState.LEDGE_LOOP", "CState.LEDGE_HANG"], "enter": "CState.LEDGE_HANG" },
+  "LEDGE_HANG": { "is": ["CState.LEDGE_IN", "CState.LEDGE_LOOP"], "enter": "CState.LEDGE_IN" },
   "LEDGE_CLIMB": { "is": ["CState.LEDGE_CLIMB"], "enter": "CState.LEDGE_CLIMB" },
   "ROLL": { "is": ["CState.ROLL", "CState.LEDGE_ROLL"] },
   "SHIELDING": { "is": ["CState.SHIELD_IN", "CState.SHIELD_LOOP", "CState.SHIELD_HURT", "CState.SHIELD_OUT"], "enter": "CState.SHIELD_IN" },
   "TUMBLE_FALL": { "is": ["CState.TUMBLE"], "enter": "CState.TUMBLE" },
   "CRASH_LAND": { "is": ["CState.CRASH_BOUNCE", "CState.CRASH_LOOP"], "enter": "CState.CRASH_BOUNCE" },
   "CRASH_GETUP": { "is": ["CState.CRASH_GET_UP"], "enter": "CState.CRASH_GET_UP" },
-  "CAUGHT": { "is": ["CState.GRABBED_HOLD"] },
-  "STAR_KO": { "is": ["CState.STAR_KO"] },
-  "SCREEN_KO": { "is": ["CState.SCREEN_KO"] },
+  "CAUGHT": { "is": ["CState.HELD"] },
+  // (this engine knocks out at its bounds alone: no star, screen or stamina knock-out to be in)
+  "STAR_KO": { "is": [] },
+  "SCREEN_KO": { "is": [] },
   "DEAD": { "is": ["CState.KO"] },
   "SKID": { "is": ["CState.SKID"], "enter": "CState.SKID" },
   "JUMP_MIDAIR_RISING": { "is": ["CState.JUMP_MIDAIR"], "enter": "CState.JUMP_MIDAIR" },
@@ -38,5 +39,5 @@
   "TECH_GROUND": { "is": ["CState.TECH"] },
   "TECH_ROLL": { "is": ["CState.TECH_ROLL"] },
   "HEAVY_LAND": { "is": ["CState.LAND"], "enter": "CState.LAND" },
-  "STAMINA_KO": { "is": ["CState.STAMINA_KO"] }
+  "STAMINA_KO": { "is": [] }
 }

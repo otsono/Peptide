@@ -2930,9 +2930,17 @@ pub(crate) fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> Projec
                 .map(|(_, l)| ident(l))
         };
         if want_end {
-            proj.frame_scripts.iter()
-                .find(|(_, code)| code_ends_the_object(code))
-                .and_then(|(f, _)| label_at(*f))
+            // (the first label it ends in; one that ends itself from several of its labels does
+            // not die in the label it is born in, which is where it lives: simon's coffin ends in
+            // `activate` once it has held its catch and in `fail` when it caught none)
+            let mut ends: Vec<String> = Vec::new();
+            for (f, code) in proj.frame_scripts.iter() {
+                if !code_ends_the_object(code) { continue }
+                if let Some(l) = label_at(*f) { if !ends.contains(&l) { ends.push(l) } }
+            }
+            let born = proj.inner_labels.iter().min_by_key(|(f, _)| *f).map(|(_, l)| ident(l));
+            if ends.len() > 1 { ends.retain(|l| Some(l) != born.as_ref()); }
+            ends.into_iter().next()
         } else {
             // on its FIRST frame, before its first label runs: a play further in is a label
             // looping back on itself (a boomerang's `loop` replaying `loop`), not where it lives
