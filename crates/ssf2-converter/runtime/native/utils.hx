@@ -1489,3 +1489,53 @@ function projectileById(id) {
 	for (p in match.getProjectiles()) if (!p.isDisposed() && p.getUid() == id) return p;
 	return null;
 }
+
+// ---- matchStats
+// a fighter's match so far, as the source's results record (`getMatchStatistics`): the score its
+// damage counter shows, its knock-outs, falls and self-destructs, and the damage it gave and took
+function matchStats(c) {
+	if (c == null || c.getScore == null) return { score: 0, kos: 0, falls: 0, selfDestructs: 0, damageDealt: 0, damageTaken: 0 };
+	var s = c.getScore();
+	var given = 0.0;
+	var taken = 0.0;
+	if (s.damageGivenTotal != null) for (d in s.damageGivenTotal) if (d != null) given += d;
+	if (s.damageTakenTotal != null) for (d in s.damageTakenTotal) if (d != null) taken += d;
+	return { score: c.getDamageCounterScore(), kos: s.kos, falls: s.falls, selfDestructs: s.selfDestructs, damageDealt: given, damageTaken: taken };
+}
+
+// ---- spawnSpots
+// the stage's respawn beacons (`getSpawnPositionMCs`), as records of their places in the source's
+// units: copies, as the source hands out its list
+function spawnSpots() {
+	var all = stage == null || stage.exports == null ? null : stage.exports.__spawns;
+	var out = [];
+	if (all != null) for (p in all) out.push({ x: p.x, y: p.y });
+	return out;
+}
+
+// ---- playerSettings
+// a player's settings changed by the stage's code (`updatePlayerSettings`): its respawn place, in
+// the source's units and stage space, kept on the fighter, which is put there as the engine
+// respawns it
+function playerSettings(c, r) {
+	if (c == null || r == null || c.exports == null) return null;
+	if (r.x_respawn != null) c.exports.__respawnX = r.x_respawn;
+	if (r.y_respawn != null) c.exports.__respawnY = r.y_respawn;
+	if (c.exports.__respawnHeard != true && (r.x_respawn != null || r.y_respawn != null)) {
+		c.exports.__respawnHeard = true;
+		c.addEventListener(CharacterEvent.RESPAWN, function(e) {
+			if (c.exports.__respawnX != null) c.setX((c.exports.__respawnX - ORIGIN_X) * SIZE);
+			if (c.exports.__respawnY != null) c.setY((c.exports.__respawnY - ORIGIN_Y) * SIZE);
+		}, { persistent: true });
+	}
+	return null;
+}
+
+// ---- regionRect
+// a region the stage's tree places under a name, as a rectangle in the source's units (`x`, `y`,
+// `width`, `height`, as the source's Rectangle reads); nothing where the stage has none
+function regionRect(n) {
+	var r = stage == null || stage.exports == null || stage.exports.__named == null ? null : stage.exports.__named(n);
+	if (r == null || r.rect == null) return { x: 0, y: 0, width: 0, height: 0 };
+	return { x: r.rect.x, y: r.rect.y, width: r.rect.w, height: r.rect.h };
+}

@@ -169,6 +169,9 @@ pub fn stage(model: &crate::stage_parser::StageModel, dir: &Path, input: &StageI
         let r = model.clip_bounds.get(n);
         (compile::short(n).to_string(), (id.clone(), r.map(|r| r.w).unwrap_or(0.0), r.map(|r| r.h).unwrap_or(0.0)))
     }).collect();
+    // (its respawn beacons, in the source's units and stage space, for its code to read)
+    let spots: Vec<String> = model.respawns.iter().map(|p| format!("{{ x: {:.2}, y: {:.2} }}", p.x / units.size + input.origin.0, p.y / units.size + input.origin.1)).collect();
+    STAGE_SPAWNS.with(|c| *c.borrow_mut() = format!("[{}]", spots.join(", ")));
     let (script, mut gaps) = native_stage(&src, &runtime, &class, sym, &pieces, units, input, id, &regions_literal(model), &particles)
         .map_err(|why| anyhow::anyhow!("{}", why.join("; ")))?;
     for o in &left_out { gaps.push(format!("its object {o} is not written (its gaps say why)")); }
@@ -713,6 +716,8 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     slots.insert("upkeep", upkeep);
     let mut publish = w.publish.clone();
     publish.push("self.exports.__named = objectNamed;".into());
+    // (its respawn beacons, which its code asks the engine for: `getSpawnPositionMCs`)
+    publish.push(format!("self.exports.__spawns = {};", STAGE_SPAWNS.with(|c| c.borrow().clone())));
     publish.push("self.exports.__part = partNamed;".into());
     // (how many clips its weather clip holds, for the verify gates)
     if weather { publish.push("self.exports.__weatherHeld = function() { return weatherRoot.kids.length; };".into()); }
@@ -732,6 +737,11 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
     if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
     Ok((script, w.gaps.iter().cloned().collect()))
+}
+
+thread_local! {
+    /// the stage being written's respawn beacons, as a literal of records in the source's units
+    static STAGE_SPAWNS: std::cell::RefCell<String> = std::cell::RefCell::new("[]".into());
 }
 
 /// The regions the tree placed under a name: each one's rectangle and the point its clip is placed

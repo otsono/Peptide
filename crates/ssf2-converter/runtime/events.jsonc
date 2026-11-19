@@ -24,6 +24,7 @@
     "charLedgeGrab":        "CharacterEvent.LEDGE_GRAB",
     "charKODeath":          "CharacterEvent.KNOCK_OUT",
     "charCounter":          "GameObjectEvent.COUNTER",
+    "damageChanged":        "GameObjectEvent.DAMAGE_UPDATED",
     "charAbsorb":           "GameObjectEvent.ABSORBBOX_CONNECTED",
     "reverseHit":           "GameObjectEvent.REFLECTBOX_CONNECTED",
     "reverse":              "GameObjectEvent.REFLECTED"

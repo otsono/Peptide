@@ -318,7 +318,9 @@
   // the ledges of the stage's floors, in its space (`stageLedges`)
   "getLedges": { "code": "stageLedges()", "helper": "stageLedges", "returns": "object" },
   // the smash ball's area and where items fall: this engine's matches have neither for a stage to state
-  "getSmashBallBounds": { "code": "new Rectangle(0, 0, 0, 0)", "returns": "rect", "gap": "getSmashBallBounds: the smash ball's area" },
+  // the smash ball's area the stage draws (its `smashBallBoundary` clip), as a rectangle of the
+  // stage's: this engine has no smash ball to put in it, and the stage's code reads and moves it
+  "getSmashBallBounds": { "code": "regionRect(\"smashBallBoundary\")", "helper": "regionRect", "returns": "rect" },
   "getItemSpawnBoundsList": { "code": "[new Rectangle(0, 0, 0, 0)]", "returns": "record", "gap": "getItemSpawnBoundsList: where items fall" },
   // where it was put, before its own code moved it (`startPosition`)
   "getStartPosition": { "code": "startPosition()", "helper": "startPosition", "returns": "record" },
@@ -362,12 +364,16 @@
   // the camera's hold on the stage is this engine's
   "PeptideAPI.setCamStageFocus": { "code": "", "gap": "setCamStageFocus: the camera's hold on the stage" },
   // the clips the source's engine places its fighters at: this engine's spawn points are its own
-  "getSpawnPositionMCs": { "code": "[]", "returns": "record", "gap": "getSpawnPositionMCs: the engine's own spawn points" },
-  // the match's item rotation: this engine's matches name none a stage could hand out
-  "PeptideAPI.getAvailableItemList": { "code": "[]", "returns": "object", "gap": "getAvailableItemList: the match's item rotation" },
+  // the stage's respawn beacons, as records of their places in the source's units (the stage
+  // publishes them; a write to one moves nothing the engine respawns at)
+  "getSpawnPositionMCs": { "code": "spawnSpots()", "helper": "spawnSpots", "returns": "record" },
+  // the match's item rotation: a match here has no items, so the rotation is empty, as the
+  // source's is with items off
+  "PeptideAPI.getAvailableItemList": { "code": "[]", "returns": "object" },
   // a feature of the mode the match is played in: this engine's matches turn none on
   "PeptideAPI.hasFeature": { "code": "false", "returns": "bool" },
-  "PeptideAPI.getItemFrequency": { "code": "0", "returns": "number", "gap": "getItemFrequency: the match's item rate" },
+  // (and their rate is none, as the source's is with items off)
+  "PeptideAPI.getItemFrequency": { "code": "0", "returns": "number" },
   // the track playing: the stage's own (STAGE_MUSIC), at the match's time in ms. this engine's music
   // is its own, so where the source's would be is worked out
   "PeptideAPI.getCurrentMusicInfo": { "code": "{ linkage: STAGE_MUSIC, position: match.getElapsedFrames() * 1000 / 60 }", "returns": "rect" },
@@ -380,7 +386,7 @@
   "PeptideAPI.deleteTimedCameraTarget": { "code": "camPartGone(match.getCamera(), {0})", "helper": "camPart" },
   "PeptideAPI.lightFlash": { "code": "", "gap": "lightFlash: the screen's flash" },
   // a fighter's match record: this engine keeps its lives and damage, not the source's score
-  "getMatchStatistics": { "code": "{ score: 0, kos: 0, falls: 0, selfDestructs: 0, damageDealt: 0, damageTaken: 0 }", "returns": "record", "gap": "getMatchStatistics: the match's score" },
+  "getMatchStatistics": { "code": "matchStats({self})", "helper": "matchStats", "returns": "record" },
   // a fighter's costume's colours by its name: no costume table here
   "PeptideAPI.getCostumeData": { "code": "null", "returns": "record", "gap": "getCostumeData: a costume's colours by the fighter's name" },
   // an engine object (an effect it made) taken off the one it is in: gone (a record of a clip, drawn
@@ -646,7 +652,9 @@
   // star KOs turned off: a fighter past the top is KO'd at once, which is the only KO this engine
   // has, so the stage plays as its source does; turned on, the KO still lands
   "setStarKOEnabled": {"code": "null", "returns": "object"},
-  "updatePlayerSettings": {"code": "null", "returns": "object", "gap": "updatePlayerSettings: a player's respawn place"},
+  // a player's settings changed by the stage: its respawn place (`x_respawn`, `y_respawn`), where
+  // the fighter is put as the engine respawns it
+  "updatePlayerSettings": {"code": "playerSettings({self}, {0})", "helper": "playerSettings", "returns": "object"},
   "breakTarget": "{self}.isDisposed() ? null : {self}.kill()",
   "initialize": "null",
   "update": "null",
