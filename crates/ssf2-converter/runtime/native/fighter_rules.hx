@@ -622,8 +622,19 @@ function actionsOf(anims) {
 }
 // turned off with no count of frames, an attack comes back after the count it declares
 // (`reenableTimer`, source frames, given at conversion); none keeps it off. every one turned off is back on when it lands
-function allowAttack(on, anims, ?frames) {
-	if (!on && frames != null && frames > 0) self.addTimer(Std.int(frames * 2), 1, function() { allowAttack(true, anims, null); }, { persistent: true });
+// (`attack`: the source's name for it and the animations of it; the source tells its `attackEnabled`
+// listeners of one turned back on, by that name)
+var labelsOff = self.makeObject([]);
+var attackEnabledHeard = self.makeObject([]);
+function attackEnabledTell(label) {
+	for (h in attackEnabledHeard.get().copy()) h({ data: { attackData: { name: label } } });
+}
+function allowAttack(on, attack, ?frames) {
+	if (!on && frames != null && frames > 0) self.addTimer(Std.int(frames * 2), 1, function() { allowAttack(true, attack, null); }, { persistent: true });
+	var anims = attack.anims;
+	var labels = labelsOff.get();
+	if (!on && labels.indexOf(attack.label) < 0) labels.push(attack.label);
+	if (on && labels.indexOf(attack.label) >= 0) { labels.remove(attack.label); attackEnabledTell(attack.label); }
 	var off = actionsOff.get();
 	var effects = actionEffects.get();
 	for (a in actionsOf(anims)) {
@@ -655,6 +666,9 @@ function actionsBack(?e) {
 		off.splice(0, 1);
 		effects.splice(0, 1);
 	}
+	var labels = labelsOff.get().copy();
+	labelsOff.set([]);
+	for (l in labels) attackEnabledTell(l);
 }
 
 // ---- place_effect

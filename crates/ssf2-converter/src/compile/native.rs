@@ -4866,9 +4866,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let Expr::Str(k) = k else { return Err("makes an effect with options named as it runs".into()) };
                 // (whether it turns with its maker, `flip`: the engine's `flipWith`)
                 if k == "flip" { opts.insert(k.clone(), v); continue; }
-                // (an option with no form here is left out and said)
+                // (an option with no form here is left out and said; one that is neither an option the
+                // source's effects take nor a property of a clip does nothing there, and nothing here)
                 if !matches!(k.as_str(), "x" | "y" | "scaleX" | "scaleY" | "rotation" | "behind" | "parentLock" | "syncHitStun" | "flipOnX" | "loop" | "resize" | "absolute") {
-                    self.gaps.insert(format!("names an effect option {k}, which is not ported"));
+                    if matches!(k.as_str(), "alpha" | "visible" | "width" | "height" | "rotationX" | "rotationY" | "rotationZ" | "scaleZ" | "z" | "blendMode" | "filters" | "transform" | "name" | "cacheAsBitmap" | "mask") {
+                        self.gaps.insert(format!("names an effect option {k}, which is not ported"));
+                    }
                     continue;
                 }
                 opts.insert(k.clone(), v);
@@ -6530,6 +6533,12 @@ self.playFrameLabel({})", quote(f))); }
             }
         }
         let name = super::events::named(self.o.runtime, ev).ok_or("listens for an event named as it runs")?;
+        // an attack of its turned back on (`attackEnabled`): told by the turn (`allowAttack`)
+        if name == "attackEnabled" && who == "self" && self.o.fighter {
+            let h = self.handler(handler)?;
+            self.blocks.insert("attack".into()); self.blocks.insert("actions".into());
+            return Ok((if m == "addEventListener" { format!("attackEnabledHeard.get().remove({h});\nattackEnabledHeard.get().push({h})") } else { format!("attackEnabledHeard.get().remove({h})") }, Ty::Any));
+        }
         if name == "charAttackComplete" && who == "self" && self.o.fighter {
             let h = self.handler(handler)?;
             self.blocks.insert("attack".into());

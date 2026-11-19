@@ -602,7 +602,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             let mut a: Vec<String> = f.anim_of.get(&m[3]).map(|x| compile::quote(x)).into_iter()
                 .chain(f.pieces.iter().filter(|p| p.label == m[3]).map(|p| compile::quote(&p.fm_name))).collect();
             a.dedup();
-            format!("{}{}[{}]", &m[1], &m[2], a.join(", "))
+            // (turned off or on: with the source's name for it, which its `attackEnabled` listeners hear)
+            if &m[1] == "allowAttack(" { format!("{}{}{{ label: {}, anims: [{}] }}", &m[1], &m[2], compile::quote(&m[3]), a.join(", ")) }
+            else { format!("{}{}[{}]", &m[1], &m[2], a.join(", ")) }
         }).into_owned();
         if stops { c } else { named_sound.replace_all(&c, "AudioClip.play(ownResource.getContent($1))").into_owned() }
     };
