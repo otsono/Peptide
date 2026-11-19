@@ -312,6 +312,8 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // the rate it hits again at, declared or written by its code
     let mut starts = taken.starts.clone();
     for p in &parts { starts.push(format!("{};", native::part_call(p))); }
+    // (one that keeps the hits it lands before its first frame, `heardEarly`: kept from its start)
+    if functions.iter().any(|f| f.contains("earlyListen()")) { starts.insert(0, "earlyListen();".into()); }
     let mut publish_refresh = false;
     if refresh.is_some() || written.blocks.contains("refresh") {
         functions.push(native::helper(runtime, "refresh", "projectile", "", &[], &[])?);

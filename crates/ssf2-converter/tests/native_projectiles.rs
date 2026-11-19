@@ -12,7 +12,8 @@ fn links_arrow_is_plain_fraymakers_code() {
     let gaps = &report["projectile_gaps"]["link_arrow"];
     assert!(gaps.as_array().is_some_and(|g| g.is_empty()), "the arrow leaves something out: {gaps}");
     let script = std::fs::read_to_string(link.join("library/scripts/Projectile/LinkArrowScript.hx")).unwrap();
-    assert!(script.lines().count() < 250, "the arrow's script is {} lines", script.lines().count());
+    // (its first frame's hit listeners hear the hits it lands as it is made too, `heardEarly`)
+    assert!(script.lines().count() < 265, "the arrow's script is {} lines", script.lines().count());
     for runtime in ["PeptideRuntime", "AS3.", "DATA."] {
         assert!(!script.contains(runtime), "the arrow's script names {runtime}, which nothing defines");
     }

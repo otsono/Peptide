@@ -6664,8 +6664,15 @@ self.playFrameLabel({})", quote(f))); }
         if who != "self" && m == "addEventListener" && !self.o.fighter && who.ends_with(".get()") && who[..who.len() - 6].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             self.release.insert(format!("if ({who} != null && !{who}.isDisposed()) {who}.removeEventListener({engine}, {h});"));
         }
+        // (a projectile's own hit listener: told too of the hits it landed before its first frame ran)
+        // (only one its first frame adds: a later one is listening before any hit it could hear)
+        let early = if who == "self" && !self.o.fighter && !self.o.stage && !self.o.item && self.current_fn.ends_with("frame1")
+            && matches!(engine.as_str(), "GameObjectEvent.HIT_DEALT" | "GameObjectEvent.SHIELD_HIT_DEALT") {
+            self.util("heardEarly")?;
+            format!(";\nheardEarly({engine}, {h})")
+        } else { String::new() };
         Ok((if m == "addEventListener" {
-            format!("{who}.addEventListener({engine}, {h}, {opts}){note}{owned}")
+            format!("{who}.addEventListener({engine}, {h}, {opts}){note}{owned}{early}")
         } else {
             format!("{who}.removeEventListener({engine}, {h}){note}{unowned}")
         }, Ty::Any))

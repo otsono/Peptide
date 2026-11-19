@@ -899,6 +899,8 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     begin.push(format!("self.exports.__classes = [{}];", kinds.join(", ")));
     // (a body: another object's code lets things through its faces)
     if blocks.contains(&"faces") { begin.push("self.exports.__ignore = ignoreThrough;".into()); }
+    // (one that keeps the hits it lands before its first frame, `heardEarly`: kept from its start)
+    if text.contains("earlyListen()") { begin.insert(0, "earlyListen();".into()); }
     slots.insert("begin", begin);
     // (its construction, and the static values set up before it, as it is made: the rest as it starts)
     // (an item's handler starts it its own way: all of it as it starts)

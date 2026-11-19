@@ -600,7 +600,7 @@ function keysIn(o) {
 // them reach
 var gameVarsHere = new haxe.ds.StringMap();
 function gameVars() {
-	var st = match.getStage();
+	var st = stage;
 	if (st == null || st.exports == null) return gameVarsHere;
 	if (st.exports.__gameVars == null) st.exports.__gameVars = new haxe.ds.StringMap();
 	return st.exports.__gameVars;
@@ -1835,14 +1835,14 @@ function bodyCopy(f) {
 	if (r.sprite != null) {
 		var shader = f.getCostumeShader();
 		if (shader != null && shader.paletteMap != null) r.sprite.setPalette(shader.paletteMap);
-		match.getStage().getCharactersFrontContainer().addChild(r.sprite);
+		stage.getCharactersFrontContainer().addChild(r.sprite);
 		r.sprite.visible = false;
 	}
 	r.stance = { currentFrame: 1, totalFrames: 1,
 		playFrame: function(n) { r.stance.currentFrame = Std.int((n + 1) / 2); },
 		pause: function() {}, resume: function() {} };
 	r.isDisposed = function() { return r.gone; };
-	r.destroy = function() { r.gone = true; if (r.sprite != null) match.getStage().getCharactersFrontContainer().removeChild(r.sprite); bodiesShown.remove(r); };
+	r.destroy = function() { r.gone = true; if (r.sprite != null) stage.getCharactersFrontContainer().removeChild(r.sprite); bodiesShown.remove(r); };
 	bodiesShown.push(r);
 	if (bodiesShown.length == 1) self.addTimer(1, -1, bodiesFollow, { persistent: true });
 	return r;
@@ -1873,3 +1873,15 @@ function bodiesFollow() {
 	}
 }
 function isDisposedSelf() { return self.isDisposed(); }
+
+// ---- heardEarly
+// the hits a projectile lands before its first frame's code has run (one made on a fighter hits it
+// as it is made): kept from its start (`earlyListen`), and told to a listener for them its first
+// frame adds, as the source's first frame listens before any hit
+var earlyHits = [];
+function earlyListen() {
+	self.addEventListener(GameObjectEvent.HIT_DEALT, function(e) { if (!started.get()) earlyHits.push({ t: GameObjectEvent.HIT_DEALT, e: e, at: match.getElapsedFrames() }); }, { persistent: true });
+	self.addEventListener(GameObjectEvent.SHIELD_HIT_DEALT, function(e) { if (!started.get()) earlyHits.push({ t: GameObjectEvent.SHIELD_HIT_DEALT, e: e, at: match.getElapsedFrames() }); }, { persistent: true });
+}
+// (told only as its first frame listens: a listener added later hears only the hits after it)
+function heardEarly(t, h) { for (x in earlyHits.copy()) if (x.t == t && match.getElapsedFrames() - x.at <= 2) h(x.e); }
