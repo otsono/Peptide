@@ -1272,26 +1272,32 @@ function floorAttach(o) {
 // the check an object's code makes of each hit about to land on it (`setHurtInterrupt`): handed
 // the one hitting it, as `target`, and a hit it answers true is not landed; null takes the check
 // away. the hit is turned away where it is dealt, so every object in the match that can hit is
-// listened to as it comes in
+// listened to as it comes in. the checks are kept in the match's globals (another object's own
+// exports may be the engine's, with no room for them)
+function hurtChecks() {
+	if (match.globals.__hurtChecks == null) { match.globals.__hurtChecks = []; match.globals.__hurtWatched = []; }
+	return match.globals.__hurtChecks;
+}
 function hurtInterrupt(o, f) {
 	if (o == null) return;
-	o.exports.__hurtCheck = f;
-	if (o.exports.__hurtHeard == true) return;
-	o.exports.__hurtHeard = true;
+	var all = hurtChecks();
+	var mine = null;
+	for (h in all) if (h.o == o) mine = h;
+	if (mine == null) { mine = { o: o, f: f }; all.push(mine); } else mine.f = f;
 	var watch = function() {
-		var all = [];
-		for (c in match.getCharacters()) all.push(c);
-		for (p in match.getProjectiles()) all.push(p);
-		for (g in match.getCustomGameObjects()) all.push(g);
-		for (a in all) {
-			if (a == o || a.exports == null || a.exports.__hurtWatched == true) continue;
-			a.exports.__hurtWatched = true;
+		var seen = match.globals.__hurtWatched;
+		var objs = [];
+		for (c in match.getCharacters()) objs.push(c);
+		for (p in match.getProjectiles()) objs.push(p);
+		for (g in match.getCustomGameObjects()) objs.push(g);
+		for (a in objs) {
+			if (seen.indexOf(a) >= 0) continue;
+			seen.push(a);
 			var by = a;
 			by.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(e) {
 				var foe = e.data.foe;
-				if (foe == null || foe.exports == null) return;
-				var check = foe.exports.__hurtCheck;
-				if (check != null && check({ target: by, attackBoxData: e.data.hitboxStats, collisionRect: null }) == true) e.data.hitboxStats.disabled = true;
+				if (foe == null) return;
+				for (h in match.globals.__hurtChecks) if (h.o == foe && h.f != null && h.f({ target: by, attackBoxData: e.data.hitboxStats, collisionRect: null }) == true) { e.data.hitboxStats.disabled = true; return; }
 			}, { persistent: true });
 		}
 	};
@@ -1588,5 +1594,44 @@ function metalOn(c, on) {
 	}
 	c.exports.__isMetal = now;
 	if (c.exports.__metalHeard != null) for (l in c.exports.__metalHeard.copy()) l({ caller: c, isMetal: now });
+	return null;
+}
+
+// ---- teamSet
+// a team its code sets (`setTeamID`): kept in the match's globals, and a hit between it and an
+// object of that team turned away where it is dealt (only a team above nothing counts, as the
+// source's rule has it); `teamOf` is the team it set, else the engine's
+function teamOf(o) {
+	if (o == null) return -1;
+	if (match.globals.__teams != null) for (t in match.globals.__teams) if (t.o == o) return t.id;
+	return o.getTeam != null ? o.getTeam() : -1;
+}
+function teamSet(o, id) {
+	if (o == null) return null;
+	if (match.globals.__teams == null) { match.globals.__teams = []; match.globals.__teamWatched = []; }
+	var mine = null;
+	for (t in match.globals.__teams) if (t.o == o) mine = t;
+	if (mine != null) { mine.id = id; return null; }
+	match.globals.__teams.push({ o: o, id: id });
+	var watch = function() {
+		var seen = match.globals.__teamWatched;
+		var objs = [];
+		for (c in match.getCharacters()) objs.push(c);
+		for (p in match.getProjectiles()) objs.push(p);
+		for (g in match.getCustomGameObjects()) objs.push(g);
+		for (a in objs) {
+			if (seen.indexOf(a) >= 0) continue;
+			seen.push(a);
+			var by = a;
+			by.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(e) {
+				var foe = e.data.foe;
+				if (foe == null) return;
+				var t = teamOf(by);
+				if (t > 0 && teamOf(foe) == t) e.data.hitboxStats.disabled = true;
+			}, { persistent: true });
+		}
+	};
+	watch();
+	o.addTimer(1, -1, watch, { persistent: true });
 	return null;
 }

@@ -585,7 +585,8 @@
   "getCostume": "{self}.getCostumeIndex()",
   "getLives": "{self}.getLives()",
   "getID": "{self}.getUid()",
-  "getTeamID": "{self}.getTeam()",
+  // its team: one its code set (`setTeamID`), else the engine's
+  "getTeamID": { "code": "teamOf({self})", "helper": "teamSet", "returns": "number" },
   "getMetalStatus": "({self} != null && {self}.exports != null && {self}.exports.__isMetal == true)",
   "isForcedCrash": "false",
   "isCPU": "false",
@@ -631,7 +632,9 @@
   // the camera framing the whole stage for a while (in the source's frames), its fighters
   // not followed (`CameraMode.STAGE`), then going back to them
   "setStageFocus": {"code": "stageFocus({0})", "helper": "stageFocus", "returns": "object"},
-  "setTeamID": {"code": "null", "returns": "object", "gap": "setTeamID: changing a fighter's team"},
+  // its team changed by its code: kept on it, and a hit between it and its team (a team above
+  // nothing, as the source's rule has it) is turned away where it is dealt
+  "setTeamID": {"code": "teamSet({self}, {0})", "helper": "teamSet", "returns": "object"},
   // (a final smash cutscene another object asks of a fighter: the fighter's own, which its code plays)
   "startFinalCutscene": {"code": "null", "returns": "object", "gap": "startFinalCutscene: a final smash cutscene asked of another fighter"},
   // turning into another fighter of the package (`replaceCharacter(id, attack, label)`): the
