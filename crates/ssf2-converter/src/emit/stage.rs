@@ -780,7 +780,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         .find_map(|k| k.methods.iter().find(|m| (m.name == "ownStats" || m.name == "getOwnStats") && !m.is_static))
         .and_then(|m| crate::model::declare::returned(&m.function.body));
     let plain = |v: &Value| match v { Value::Num(n) => Some(format!("{n}")), Value::Bool(b) => Some(b.to_string()), Value::Str(s) => Some(compile::quote(s)), Value::Null => Some("null".into()), _ => None };
-    let declared = |k: &str| own.as_ref().and_then(|o| o.get(k)).and_then(&plain);
+    let declared = |k: &str| own.as_ref().and_then(|o| o.get(k)).and_then(plain);
     // (an item, one a fighter picks up: it carries the item handler)
     let is_item = compile::short(&itself.super_name) == "PeptideItem";
     let mut jumps = super::label_jumps(src, &pieces);
