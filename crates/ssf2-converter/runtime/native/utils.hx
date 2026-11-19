@@ -1565,3 +1565,28 @@ function finalForm(c) {
 	}, { persistent: true });
 	return null;
 }
+
+// ---- metalOn
+// a fighter turned metal or back (`setMetalStatus`): the game's metal look (SATURATION, BRIGHTNESS,
+// CONTRAST, as its package declares it) laid over it as the engine's colour filter, taken off as
+// it turns back; its listeners for the change told (`charMetalChange`)
+function metalOn(c, on) {
+	if (c == null || c.exports == null) return null;
+	var was = c.exports.__isMetal == true;
+	var now = on == true;
+	if (was == now) return null;
+	if (now) {
+		var h = new HsbcColorFilter();
+		h.saturation = SATURATION;
+		h.brightness = BRIGHTNESS;
+		h.contrast = CONTRAST;
+		c.addFilter(h);
+		c.exports.__metalFilter = h;
+	} else if (c.exports.__metalFilter != null) {
+		c.removeFilter(c.exports.__metalFilter);
+		c.exports.__metalFilter = null;
+	}
+	c.exports.__isMetal = now;
+	if (c.exports.__metalHeard != null) for (l in c.exports.__metalHeard.copy()) l({ caller: c, isMetal: now });
+	return null;
+}

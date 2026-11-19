@@ -70,8 +70,8 @@
     "leftSide":  { "code": "{arg}.data.structureType == StructureType.RIGHT_WALL", "is": "bool" },
     "rightSide": { "code": "{arg}.data.structureType == StructureType.LEFT_WALL", "is": "bool" },
     "top":       { "code": "{arg}.data.structureType == StructureType.CEILING", "is": "bool" },
-    // this engine has no metal fighter (a gap the report names), so none is ever metal
-    "isMetal":   { "code": "false", "is": "bool" }
+    // whether the fighter is metal now, as its turn tells (`metalOn`)
+    "isMetal":   { "code": "({arg} != null && {arg}.isMetal == true)", "is": "bool" }
   },
   // the other fields the source's engine puts in a record it hands a listener, which nothing above
   // translates yet. a field in neither list is in no record of the source's: reading it gives

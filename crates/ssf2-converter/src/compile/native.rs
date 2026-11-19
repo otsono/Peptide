@@ -5499,6 +5499,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.util("fsCutscene")?;
                 return Ok((format!("fsCutsceneStart({f}(0, 0))"), Ty::Any));
             }
+            // turning metal: the game's metal look, as its shared packages declare it, laid over the
+            // fighter as the engine's colour filter (`metalOn`)
+            ("setMetalStatus", [on, ..]) => {
+                let (on, _) = self.expr(on)?;
+                let look = crate::shared_packages::metal_look().ok_or("turns metal, and no package here declares the metal look")?;
+                let g = |k: &str, d: f64| look.get(k).copied().unwrap_or(d);
+                let words = [("SATURATION", number(g("saturation", -100.0) / 100.0)),
+                             ("BRIGHTNESS", number((g("brightness", 0.0) + g("redOffset", 0.0)) / 100.0)),
+                             ("CONTRAST", number(g("contrast", 0.0) / 100.0 * g("redMultiplier", 1.0)))];
+                if !self.helpers.contains_key("metalOn") { self.helpers.insert("metalOn".into(), helper(self.o.runtime, "utils", "metalOn", "metalOn", &words, &[])?); }
+                return Ok((format!("metalOn({who}, {on})"), Ty::Any));
+            }
             // (asked of the fighter by one of its objects: the fighter's cutscene, made by the object
             // for the fighter)
             ("startFinalCutscene", []) if !mine && !self.o.fighter && !self.o.stage => {
@@ -6401,6 +6413,15 @@ self.playFrameLabel({})", quote(f))); }
                 format!("if ({who} != null && !{who}.isDisposed()) {id}.set({who}.addTimer(2, -1, {h}, {{ persistent: true }}))")
             } else {
                 format!("if ({who} != null && !{who}.isDisposed() && {id}.get() >= 0) {who}.removeTimer({id}.get());\n{id}.set(-1)")
+            }, Ty::Any));
+        }
+        // a fighter turned metal or back (`charMetalChange`): told by the turn (`metalOn`)
+        if name == "charMetalChange" {
+            let h = self.handler(handler)?;
+            return Ok((if m == "addEventListener" {
+                format!("if ({who} != null) {{ if ({who}.exports.__metalHeard == null) {who}.exports.__metalHeard = []; {who}.exports.__metalHeard.remove({h}); {who}.exports.__metalHeard.push({h}); }}")
+            } else {
+                format!("if ({who} != null && {who}.exports.__metalHeard != null) {who}.exports.__metalHeard.remove({h})")
             }, Ty::Any));
         }
         // a fighter turned into its other form (`charTransform`): told by the turn (`finalForm`)

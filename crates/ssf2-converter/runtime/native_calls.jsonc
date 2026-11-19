@@ -166,7 +166,8 @@
   "lighten": { "code": "darkenStage(false)", "helper": "darkenStage" },
   "killDarkener": { "code": "darkenStage(false)", "helper": "darkenStage" },
   // not ported: a fighter turned metal (`gap` notes it in the report)
-  "setMetalStatus": { "code": "", "gap": "turns metal, which nothing here shows" },
+  // (turning metal is written by the native writer: the game's metal look as the engine's filter)
+  "setMetalStatus": { "code": "", "gap": "turns metal where no package declares the metal look" },
   // (a projectile's gravity, written as it flies: as its declared one converts)
   "modifyGravity": "{self}.updateProjectileStats({ gravity: {0} * {accel} })",
   // (the clip its animation shows, asked of itself: it is its own clip here)
@@ -585,7 +586,7 @@
   "getLives": "{self}.getLives()",
   "getID": "{self}.getUid()",
   "getTeamID": "{self}.getTeam()",
-  "getMetalStatus": "false",
+  "getMetalStatus": "({self} != null && {self}.exports != null && {self}.exports.__isMetal == true)",
   "isForcedCrash": "false",
   "isCPU": "false",
   "cpuLevel": "0",

@@ -250,3 +250,23 @@ pub fn registered_lists(package: &str, prop: &str) -> std::collections::BTreeMap
     if let Ok(mut m) = memo.lock() { m.insert(key, out.clone()); }
     out
 }
+
+/// The game's metal look, as its shared packages declare it (`getMetalCostumeData`'s `default`): a
+/// record of the colour adjustment by name (saturation, brightness, contrast, multipliers, offsets)
+pub fn metal_look() -> Option<std::collections::BTreeMap<String, f64>> {
+    static MEMO: OnceLock<Option<std::collections::BTreeMap<String, f64>>> = OnceLock::new();
+    MEMO.get_or_init(|| {
+        for pkg in manifest_packages() {
+            let Ok(model) = crate::model::SourceModel::read(&pkg.swf) else { continue };
+            for c in model.classes.values() {
+                let Some(m) = c.methods.iter().find(|m| m.name == "getMetalCostumeData") else { continue };
+                let Some(v) = crate::model::declare::returned(&m.function.body) else { continue };
+                let Some(def) = v.get("default") else { continue };
+                let out: std::collections::BTreeMap<String, f64> = def.entries().iter()
+                    .filter_map(|(k, x)| match x { crate::model::declare::Value::Num(n) => Some((k.clone(), *n)), _ => None }).collect();
+                if !out.is_empty() { return Some(out) }
+            }
+        }
+        None
+    }).clone()
+}
