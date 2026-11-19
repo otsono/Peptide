@@ -6692,6 +6692,12 @@ self.playFrameLabel({})", quote(f))); }
     fn part_of(&mut self, e: &Expr) -> Option<String> {
         if !self.o.fighter { return None }
         let Expr::Member(t, name) = e else { return None };
+        // (one the animation places under two clips: the one inside this clip, by its name)
+        let name = match &**t {
+            Expr::Member(_, parent) if self.o.parts.iter().any(|p| p.name == format!("{parent}_{name}")) => format!("{parent}_{name}"),
+            _ => name.clone(),
+        };
+        let name = &name;
         if !self.o.parts.iter().any(|p| &p.name == name) { return None }
         let root = |w: &mut Self, t: &Expr| matches!(t, Expr::This) || w.is_clip(t)
             || matches!(t, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip") && w.expr(o).is_ok_and(|(x, _)| x == "self")));

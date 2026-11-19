@@ -1758,6 +1758,38 @@ pub fn named_descendants_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<Na
     out
 }
 
+/// `named_descendants_of_sprite`, each with the name of the named clip it sits in ("" for one
+/// placed through unnamed clips alone), each (parent, name) once: the same name under two
+/// clips is two children (lucario's `aura1.cspark` and `aura2.cspark`)
+pub fn named_descendant_paths(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<(String, NamedChild)> {
+    let sprites: std::collections::BTreeSet<u16> = swf.tags.iter().filter_map(|t| match t {
+        swf::Tag::DefineSprite(s) => Some(s.id), _ => None }).collect();
+    let mut out: Vec<(String, NamedChild)> = Vec::new();
+    #[allow(clippy::too_many_arguments)]
+    fn walk(swf: &swf::Swf<'_>, sprites: &std::collections::BTreeSet<u16>, sprite_id: u16, parent: &str,
+            at: &ImageLocalMatrix, depth: u32, out: &mut Vec<(String, NamedChild)>) {
+        if depth > 6 { return }
+        let Some(tags) = sprite_tags(swf, sprite_id) else { return };
+        let mut seen: std::collections::BTreeSet<(u16, u16, String)> = std::collections::BTreeSet::new();
+        for tag in tags {
+            let swf::Tag::PlaceObject(po) = tag else { continue };
+            let cid = match &po.action {
+                swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => *cid,
+                _ => continue,
+            };
+            let name = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()).unwrap_or_default();
+            if !sprites.contains(&cid) || !seen.insert((po.depth, cid, name.clone())) { continue }
+            let here = at.compose(&po_to_mat(po));
+            if !name.is_empty() && !out.iter().any(|(p, c)| c.name == name && p == parent) {
+                out.push((parent.to_string(), NamedChild { name: name.clone(), sprite_id: cid, matrix: here }));
+            }
+            walk(swf, sprites, cid, if name.is_empty() { parent } else { &name }, &here, depth + 1, out);
+        }
+    }
+    walk(swf, &sprites, sprite_id, "", &ImageLocalMatrix::default(), 0, &mut out);
+    out
+}
+
 /// where a sprite places the child it names on each of its frames (0-based; none where it
 /// places none), in the sprite's own space
 pub fn child_placements(swf: &swf::Swf<'_>, sprite_id: u16, name: &str) -> Vec<Option<ImageLocalMatrix>> {

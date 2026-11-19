@@ -928,20 +928,29 @@ fn process_character(
         };
         for (sid, label) in &roots {
             let Some(fm) = char_data.ssf2_to_fm_anim.get(label).cloned() else { continue };
-            for child in image_extractor::named_descendants_of_sprite(parsed_swf, *sid) {
+            let found = image_extractor::named_descendant_paths(parsed_swf, *sid);
+            for (parent, child) in found.iter().cloned() {
                 if taken.contains(&child.name) && filled(&child.name) { continue }
+                let orig = child.name.clone();
+                // (a name the animation places under two clips: each its own part, by the clip it is in)
+                let twice = found.iter().filter(|(_, c)| c.name == child.name).count() > 1;
+                let nested = twice && !parent.is_empty() && crate::dyn_re(&format!(r"\.{}\.{}\b", regex::escape(&parent), regex::escape(&child.name))).is_match(&code);
+                // (the first keeps the plain name, as the code reaching it by name alone finds it)
+                let first = found.iter().find(|(_, c)| c.name == child.name).map(|(p, _)| p.clone()).unwrap_or_default();
+                let key = if nested && parent != first { format!("{parent}_{}", child.name) } else { child.name.clone() };
                 // reached as the fighter's own field, or as the stance clip's (`getStanceMC().waftloc`)
                 // or turned by its name inside a clip the stance places (`stance.aura1.cspark.gotoAndStop(n)`)
-                let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){0}\b|\.{0}\.(?:gotoAndStop|gotoAndPlay|play|stop|nextFrame|prevFrame)\(", regex::escape(&child.name)));
+                let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){0}\b|\.{0}\.(?:gotoAndStop|gotoAndPlay|play|stop|nextFrame|prevFrame)\(", regex::escape(&orig)));
                 if !re.is_match(&code) { continue }
-                if out.iter().any(|(n, a, _)| *n == child.name && *a == fm) { continue }
-                out.push((child.name.clone(), fm.clone(), child));
+                if out.iter().any(|(n, a, _)| *n == key && *a == fm) { continue }
+                out.push((key, fm.clone(), child));
             }
         }
         out
     };
     let fighter_part_names: Vec<String> = {
-        let mut v: Vec<String> = fighter_part_children.iter().map(|(n, _, _)| n.clone()).collect();
+        // (by the names the clips are placed under: a part keyed by its parent is still that clip)
+        let mut v: Vec<String> = fighter_part_children.iter().map(|(_, _, c)| c.name.clone()).collect();
         v.sort(); v.dedup(); v
     };
     let mut img_result = image_extractor::extract_images_from_swf_skipping(
