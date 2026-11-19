@@ -477,6 +477,11 @@ fn generate_own_projectiles(
             }
             (out, skip)
         };
+        crate::emit::add_object_parts(&proj.name, parts.iter().filter(|p| !p.path.contains('.')).map(|p| crate::emit::ObjPart {
+            path: p.path.clone(), anim: p.anim.clone(),
+            at: (p.matrix.tx, p.matrix.ty, p.matrix.rotation, p.matrix.sx, p.matrix.sy),
+            frames: p.frame_count, labels: p.labels.clone(),
+        }).collect());
         for code in behaviour.values_mut() { rewrite_part_refs(&parts, code); }
         // an item's frame interrupt (the holder's attacks it turns into throws) and its holder
         // are what it publishes: rewritten here, before any pass strikes them as calls this

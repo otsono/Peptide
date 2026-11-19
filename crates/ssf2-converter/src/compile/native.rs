@@ -242,6 +242,8 @@ pub struct Object<'a> {
     /// whether it publishes a power for a fighter that swallows it: its effects, and the clips
     /// inside them, are written for that one to ask for by name
     pub power_record: bool,
+    /// an object's parts: the named children of its clip its code turns, drawn apart (`projPart`)
+    pub own_parts: Vec<crate::emit::ObjPart>,
 }
 
 /// one of a fighter's parts: how its code names it, and each animation that places it, as
@@ -364,6 +366,8 @@ pub fn write(o: &Object) -> Result<Written, String> {
         if !o.effect_names.is_empty() { w.effect_art()?; }
         if !o.effect_inners.is_empty() { w.inner_clips()?; w.effect_jump()?; }
     }
+    // (an object with parts draws them from its start, `projPart`)
+    if !o.own_parts.is_empty() && !o.fighter && !o.stage { w.util("projPart")?; }
     w.write()
 }
 
@@ -426,6 +430,8 @@ struct Writer<'o, 'a> {
     clip_recs: BTreeSet<String>,
     /// handlers its code listens on another object with: the event's caller is that object there
     foreign_handlers: BTreeSet<String>,
+    /// whether the listener being written is already primed with what its damage is (`damageStep`)
+    primed: bool,
     /// list fields its code fills only with clips of the planes (or nothing): true while every one is
     part_lists: BTreeMap<String, bool>,
     /// variables that hold a clip of the planes now
@@ -552,7 +558,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), primed: false, clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false, arming: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -1654,8 +1660,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let test = self.test(c)?;
                 // (a test that always passes is its body)
                 if test == "true" { return self.block(then, depth) }
-                // (one that never passes is what it does otherwise)
-                if test == "false" { return self.block(els, depth) }
+                // (one that never passes is what it does otherwise: `false && ...` never looks further)
+                if test == "false" || (test.starts_with("false && ") && !test.contains("||")) { return self.block(els, depth) }
                 let mut out = vec![format!("{tab}if ({test}) {{")];
                 out.extend(self.block(then, depth + 1)?);
                 if !els.is_empty() {
@@ -2873,9 +2879,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (whether it hits with an effect: whether it makes the one it hits flinch, as the box is written)
                 if k == "hasEffect" { return Ok((format!("({arg}.data.hitboxStats.flinch != false)"), Ty::Bool)) }
                 // (one this engine keeps none of: nothing, as the box has none here)
+                // (one this engine has no stat for: what the box declares, from its attacker's
+                // animation's metadata, `hitBoxMeta`)
                 if crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) {
-                    self.gaps.insert(format!("reads the {k} of the box that hit it, which this engine keeps none of"));
-                    return Ok(("null".into(), Ty::Any));
+                    self.util("hitBoxMeta")?;
+                    return Ok((format!("hitBoxMeta({arg}).{k}"), Ty::Any));
                 }
                 let (f, scale) = hitbox_field(k)?;
                 let v = format!("{arg}.data.hitboxStats.{f}");
@@ -2896,6 +2904,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 if matches!(field.as_str(), "attackBoxData" | "callerAttackBoxData") { return Ok((format!("{}({arg}.data.hitboxStats)", self.box_record()?), Ty::Rect)) }
                 // (the caller, in a handler its code listens on another object with: that object)
                 if field == "caller" && self.foreign_handlers.contains(&self.current_fn) { return Ok((format!("{arg}.data.self"), Ty::Object)) }
+                // (the damage it tells of: a hit's own, or how far an update moved it, `damageStep`)
+                if field == "damage" { self.util("damageStep")?; return Ok((format!("damageStep({arg})"), Ty::Num)) }
                 return Ok(match record(&arg, field)? {
                     Some(v) => v,
                     None => {
@@ -3376,6 +3386,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // drawn nowhere here)
                 let pc = self.o.model.classes.get(n).or_else(|| self.o.model.classes.values().find(|c| short(&c.name) == n.as_str()));
                 if let Some(pc) = pc {
+                    // (one that is one of its effects: drawn as that effect where its code puts it)
+                    if matches!(short(&pc.super_name), "MovieClip" | "Sprite") && crate::emit::native_projectile::is_quiet_inside(self.o.model, self.o.runtime, &pc.name) {
+                        if let Some(made) = self.screen_clip(short(n)) { return Ok((made, Ty::Rect)) }
+                    }
                     if matches!(short(&pc.super_name), "MovieClip" | "Sprite") && crate::emit::native_projectile::is_quiet_inside(self.o.model, self.o.runtime, &pc.name) {
                         self.gaps.insert(format!("makes a {} clip, which is drawn nowhere here", short(n)));
                         self.util("clipRecord")?;
@@ -3438,6 +3452,8 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn own(&mut self, n: &str) -> Result<(String, Ty), String> {
         // (a field its code never writes that names a clip its clip places is that clip, which
         // Flash binds to it: drawn whole into its art here, with no object of its own to turn)
+        // (one of its parts, drawn apart: `projPart`'s record)
+        if let Some(made) = self.own_part(n) { return Ok((made, Ty::Rect)) }
         if let Some(at) = self.placed_child(n) {
             // (a record holding its look as the clip's placement starts it, which its code reads
             // and writes as the source's does; drawn nowhere)
@@ -3870,7 +3886,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             let cases: Vec<String> = crate::stage_emit::CAMERA_STATS.iter().map(|(k, v)| format!("case {}: return {};", quote(k), number(*v))).collect();
             self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[], &cases)?);
         }
-        if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel)), ("ORIGIN_X", number(self.o.origin.0)), ("ORIGIN_Y", number(self.o.origin.1))], &[])?); }
+        if !self.helpers.contains_key(name) {
+            self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel)), ("ORIGIN_X", number(self.o.origin.0)), ("ORIGIN_Y", number(self.o.origin.1)), ("CONTENT", quote(&crate::projectile_gen::projectile_content_id(&self.o.content)))], &[])?);
+            for n in needs(self.o.runtime, name) { self.util(&n)?; }
+        }
         Ok(name.into())
     }
 
@@ -4525,6 +4544,19 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.game_ticks.insert(h.clone(), flag.clone());
                     return Ok((format!("{flag}.set({})", m == "addEventListener"), Ty::Any));
                 }
+                // a clip of its library made by name that is one of its effects: drawn as that
+                // effect where its code puts it (`screenClip`)
+                (_, "clipByLinkage", [Expr::Str(n)]) if c.contains("PeptideAPI") && self.screen_clip(n).is_some() => {
+                    return Ok((self.screen_clip(n).unwrap_or_default(), Ty::Rect));
+                }
+                // a listener on the game for one this engine's match raises: the match's own
+                (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI")
+                    && super::events::named(self.o.runtime, ev).is_some_and(|n| super::events::table().matched.contains_key(&n)) => {
+                    let n = super::events::named(self.o.runtime, ev).unwrap_or_default();
+                    let e = super::events::table().matched[&n].clone();
+                    let h = self.handler(h)?;
+                    return Ok((if m == "addEventListener" { format!("match.addEventListener({e}, {h}, {{ persistent: true }})") } else { format!("match.removeEventListener({e}, {h})") }, Ty::Any));
+                }
                 // a listener on the game for an event it never raises: never told
                 (_, "addEventListener" | "removeEventListener", [ev, ..]) if c.contains("PeptideAPI")
                     && super::events::named(self.o.runtime, ev).is_some_and(|n| !super::events::table().game.contains(&n)) => {
@@ -4602,6 +4634,19 @@ impl<'o, 'a> Writer<'o, 'a> {
             if self.expr(recv).is_ok_and(|(w, _)| w.starts_with("planePart(")) {
                 let (who, _) = self.expr(recv)?;
                 return self.api(&who, m, args);
+            }
+            // (one of its parts: its timeline, `projPart`'s record)
+            if let Expr::Member(o, n) = &**recv {
+                if matches!(**o, Expr::This) {
+                    if let Some(r) = self.own_part(n) {
+                        self.util("clipRun")?;
+                        let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
+                        return Ok((match (m.as_str(), args.first()) {
+                            ("gotoAndStop" | "gotoAndPlay", Some(a)) => { let (a, _) = self.expr(a)?; format!("clipGo({r}, {a}, {hold})") }
+                            _ => format!("clipPlay({r}, {})", !hold),
+                        }, Ty::Any));
+                    }
+                }
             }
             // (a clip its clip places, which its code turns: drawn into its art, so held nowhere)
             if let Expr::Member(o, n) = &**recv {
@@ -4832,6 +4877,26 @@ impl<'o, 'a> Writer<'o, 'a> {
         let v = if self.effects == 1 { "effect".to_string() } else { format!("effect{}", self.effects) };
         let set: Vec<String> = after.iter().map(|a| format!("{v}.{a};")).collect();
         Ok((format!("var {v} = {make};\nif ({v} != null) {{ {} }}", set.join(" ")), Ty::Object))
+    }
+
+    /// a clip of its library that is one of its effects, made as a clip record drawn as that effect
+    /// where its code puts it (`screenClip`): its animations in its timeline's order
+    fn screen_clip(&mut self, n: &str) -> Option<String> {
+        let mut ps: Vec<(String, u32, u32)> = self.o.effect_pieces.iter().filter(|p| p.0 == n).map(|p| (p.1.clone(), p.2, p.3)).collect();
+        if ps.is_empty() { return None }
+        ps.sort_by_key(|p| p.1);
+        self.util("screenClip").ok()?;
+        let rows: Vec<String> = ps.iter().map(|(a, f, l)| format!("[{}, {}, {}]", quote(a), f.max(&1), l)).collect();
+        // (what its clip's own frames do, `effect_code`: run as its timeline enters each, the
+        // engine's frame of the animation as the source's frame of the timeline)
+        let mut cases = Vec::new();
+        for (anim, frame, does) in self.o.effect_code.get(n).cloned().unwrap_or_default() {
+            let Some((_, from, _)) = ps.iter().find(|p| p.0 == anim) else { continue };
+            cases.push(format!("case {}: {}", (*from).max(1) + (frame.max(1) - 1) / 2, does.replace("(e,", "(r,").replace("(e)", "(r)")));
+        }
+        if !cases.is_empty() { self.effect_code_helper().ok()?; }
+        let frames = if cases.is_empty() { String::new() } else { format!(", function(r, f) {{ switch (f) {{ {} }} }}", cases.join(" ")) };
+        Some(format!("screenClip({}, [{}]{frames})", quote(n), rows.join(", ")))
     }
 
     /// the helpers that send an effect it holds to a label or a frame
@@ -5144,7 +5209,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (n, _) = self.expr(frames)?;
                 let (t, _) = self.expr(repeat)?;
                 let h = match f { Expr::Member(x, g) if matches!(**x, Expr::This) && self.record.is_some() && self.method(g).is_some() => self.expr(f)?.0, _ => self.handler(f)? };
-                return Ok((format!("({who} == null ? null : {who}.addTimer(Std.int(2 * Math.max(1, {})), ({t} <= 0 ? -1 : {t}), {h}, {{ persistent: true }}))", paren(&n)), Ty::Num));
+                self.util("otherTimer")?;
+                return Ok((format!("otherTimer({who}, Std.int(2 * Math.max(1, {})), ({t} <= 0 ? -1 : {t}), {h})", paren(&n)), Ty::Num));
+            }
+            // (one of another object's, taken off by the function it runs: as `otherTimer` kept it)
+            ("removeTimer", [f]) if !mine && !who.starts_with("planePart(") => {
+                let h = match f { Expr::Member(x, g) if matches!(**x, Expr::This) && self.record.is_some() && self.method(g).is_some() => self.expr(f)?.0, _ => self.handler(f)? };
+                self.util("otherTimer")?;
+                return Ok((format!("otherUntimer({who}, {h})"), Ty::Any));
             }
             // (fired through its owner's call: from the owner, the same way, as the source's runs it)
             // (one made again from a record its stats were exported to)
@@ -5387,6 +5459,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let i = self.box_ix(i)?;
                 self.blocks.insert("hits".into());
                 return Ok((format!("boxMeta({} + 1).{k}", paren(&i)), Ty::Any));
+            }
+            // (an object's own box's, by its number: what the box declares)
+            ("getHitboxStat", [i, Expr::Str(k)]) if mine && !self.o.fighter && crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k)
+                && box_index(i).is_ok() && (self.o.declared)(&format!("attackBoxes.attackBox{}.{k}", box_name_suffix(i))).is_some() => {
+                return Ok(((self.o.declared)(&format!("attackBoxes.attackBox{}.{k}", box_name_suffix(i))).unwrap_or_else(|| "null".into()), Ty::Any));
+            }
+            // (another fighter's box's: what the attack it is in declares, from its animation's metadata)
+            ("getHitboxStat", [i, Expr::Str(k)]) if !mine && self.o.fighter && crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) => {
+                let n = self.box_ix(i)?;
+                return Ok((format!("({who} == null || {who}.getAnimationStatsMetadata() == null || {who}.getAnimationStatsMetadata().boxes == null || {who}.getAnimationStatsMetadata().boxes[{n}] == null ? null : {who}.getAnimationStatsMetadata().boxes[{n}].{k})"), Ty::Any));
             }
             ("getHitboxStat", [_, Expr::Str(k)]) if (mine || self.o.fighter) && crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) => {
                 self.gaps.insert(format!("reads its box's {k}, which this engine keeps none of"));
@@ -6156,7 +6238,7 @@ self.playFrameLabel({})", quote(f))); }
         if let Some(g) = &row.gap { self.gaps.insert(g.clone()); }
         if let Some(h) = &row.helper {
             if h == "cameraParameter" { self.util(h)?; }
-            if !self.helpers.contains_key(h) { self.helpers.insert(h.clone(), helper(self.o.runtime, "utils", h, h, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel)), ("ORIGIN_X", number(self.o.origin.0)), ("ORIGIN_Y", number(self.o.origin.1))], &[])?); }
+            self.util(h)?;
         }
         // (an origin of nothing adds and takes nothing: the row is the plain one)
         let mut code = row.code.clone();
@@ -6415,6 +6497,14 @@ self.playFrameLabel({})", quote(f))); }
                 format!("if ({who} != null && !{who}.isDisposed() && {id}.get() >= 0) {who}.removeTimer({id}.get());\n{id}.set(-1)")
             }, Ty::Any));
         }
+        // its own damage's updates: from what it is as its code begins listening (`damageStep`)
+        if name == "damageChanged" && who == "self" && m == "addEventListener" && !self.primed {
+            self.util("damageStep")?;
+            self.primed = true;
+            let r = self.listener(who, m, ev, handler);
+            self.primed = false;
+            return Ok((format!("damagePrime();\n{}", r?.0), Ty::Any));
+        }
         // a fighter turned metal or back (`charMetalChange`): told by the turn (`metalOn`)
         if name == "charMetalChange" {
             let h = self.handler(handler)?;
@@ -6619,6 +6709,15 @@ self.playFrameLabel({})", quote(f))); }
     /// a field of an object's (not a fighter's or a stage's) its code never writes that names a
     /// clip its clip places, which Flash binds to it: where that placement first puts it (x, y,
     /// rotation in degrees, scales)
+    /// one of its parts (a named child of its clip its code turns, drawn apart), as the record its
+    /// code holds (`projPart`)
+    fn own_part(&mut self, n: &str) -> Option<String> {
+        if self.o.fighter || self.o.stage || self.writes_field(n) { return None }
+        let p = self.o.own_parts.iter().find(|p| p.path == n)?.clone();
+        self.util("projPart").ok()?;
+        Some(part_call(&p))
+    }
+
     fn placed_child(&self, n: &str) -> Option<(f64, f64, f64, f64, f64)> {
         if self.o.fighter || self.o.stage || self.field(n).is_none() || self.writes_field(n) { return None }
         let sym = self.o.model.classes.get(&self.class).and_then(|c| c.symbol)?;
@@ -7059,6 +7158,15 @@ pub fn helper(runtime: &super::runtime::Runtime, file: &str, key: &str, name: &s
     Ok(fill_slots(&out, &slots).trim_end().to_string())
 }
 
+/// the other helpers a helper block of `utils.hx` calls (its `//: needs a b` lines)
+fn needs(runtime: &super::runtime::Runtime, key: &str) -> Vec<String> {
+    let Some(text) = runtime.native_files.get("utils") else { return Vec::new() };
+    let marker = format!("// ---- {key}");
+    let Some(start) = text.lines().position(|l| l.trim_end() == marker) else { return Vec::new() };
+    text.lines().skip(start + 1).take_while(|l| !l.starts_with("// ---- "))
+        .filter_map(|l| l.strip_prefix("//: needs ")).flat_map(|r| r.split_whitespace().map(String::from).collect::<Vec<_>>()).collect()
+}
+
 /// a name a written script declares twice at its top level (`var` or `function`): the second hides
 /// the first from every function that reads it, so two parts of the script would share one name
 pub fn declared_twice(script: &str) -> Option<String> {
@@ -7182,6 +7290,19 @@ fn record(arg: &str, field: &str) -> Result<Option<(String, Ty)>, String> {
     if let Some((code, is)) = t.record.get(field) { return Ok(Some((code.replace("{arg}", arg), Ty::named(is)))) }
     if t.unrecorded.iter().any(|f| f == field) { return Err(format!("reads the {field} of the event it is handed")) }
     Ok(None)
+}
+
+/// the call that makes (or finds) one of an object's parts, `projPart`
+pub fn part_call(p: &crate::emit::ObjPart) -> String {
+    let labels: Vec<String> = p.labels.iter().map(|(l, f)| format!("[{f}, {}]", quote(l))).collect();
+    let (x, y, r, sx, sy) = p.at;
+    format!("projPart({}, {}, {}, {}, {}, {}, {}, {}, [{}])", quote(&p.path), number(x), number(y), number(r), number(sx), number(sy), quote(&p.anim), p.frames, labels.join(", "))
+}
+
+/// a source box number as the name the source declares it under (`attackBox`, `attackBox2`, ...): the suffix
+fn box_name_suffix(e: &Expr) -> String {
+    let n = match e { Expr::Int(n) => *n, Expr::Num(n) => *n as i64, _ => 1 };
+    if n <= 1 { String::new() } else { n.to_string() }
 }
 
 /// a source box number as the engine's box index (`attackBox` is 1 there, 0 here)

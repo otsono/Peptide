@@ -134,12 +134,15 @@ function effectArt(name) {
 // an effect it holds sent to a label (each of an effect's labels is an animation of it, else a
 // label inside the one it plays) and held there or played on
 function NAME(effect, label, hold) {
+	// (a clip record drawn as the effect, `screenClip`: its timeline's)
+	if (effect != null && effect.anims != null) { clipGo(effect, label, hold); return; }
 	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	if (effect.hasAnimation(label)) effect.playAnimation(label); else effect.playFrameLabel(label);
 	if (hold) effect.pause(); else effect.resume();
 }
 // one stepped a frame on or back, and held there
 function effectStep(effect, d) {
+	if (effect != null && effect.anims != null) { clipStep(effect, d); return; }
 	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	var f = effect.getCurrentFrame() + 2 * d;
 	effect.playFrame(f < 1 ? 1 : f);
@@ -303,6 +306,8 @@ function runEffectCode() {
 }
 // an effect sent to a frame of one of its animations, and held there or played on
 function effectGo(e, anim, frame, hold) {
+	// (a clip record drawn as the effect, `screenClip`: its timeline, at that frame of the label)
+	if (e != null && e.anims != null) { for (a in e.anims) if (a[0] == anim) clipGo(e, a[1] + Std.int((frame - 1) / 2), hold); return; }
 	if (e.getAnimation() != anim) e.playAnimation(anim);
 	e.playFrame(frame);
 	if (hold) e.pause(); else e.resume();

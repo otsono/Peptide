@@ -1230,6 +1230,8 @@ function clipAdd(c, k) {
 	// (the one it is in, asked for when its place on the screen is: a function, so no record holds
 	// the one it is in, nor that one it)
 	if (k != null && c != null && (k.kids != null || k.lib == true)) k.parentOf = function() { return c; };
+	// (put on the screen, or in a clip on it: drawn there, `screenClip`)
+	if (k != null && c != null && (c.screen == true || c.onScreen == true)) screenShow(k);
 	return k;
 }
 // a point in a clip record's own space, in the screen's: its place and every one it is in, added
@@ -1254,6 +1256,7 @@ function clipChild(c, n) {
 }
 function clipRemove(c, k) {
 	if (c != null && c.kids != null) c.kids.remove(k);
+	if (k != null && k.onScreen == true) screenHide(k);
 	return k;
 }
 
@@ -1385,6 +1388,8 @@ function unseenFor(c, n) {
 // the swap it was given before is taken off, and a clip this engine does not draw is left be
 var paletteShaders = self.makeObject(null);
 function paletteOn(o, pal) {
+	// (a part's record: the effect it is drawn as, `projPart`)
+	if (o != null && o.addShader == null && o.vfx != null) o = o.vfx;
 	if (o == null || o.addShader == null || o.isDisposed()) return;
 	if (paletteShaders.get() == null) paletteShaders.set(new haxe.ds.StringMap());
 	var key = Std.string(o.getUid());
@@ -1549,7 +1554,7 @@ function regionRect(n) {
 // ---- formSwitch
 // a fighter turning into another fighter of its package (`replaceCharacter`): its other form, which
 // its merged conversion publishes (`__formSwitch`); one with no such form stays as it is
-function formSwitch(c, id, attack, label) {
+function formSwitch(c, id, ?attack, ?label) {
 	if (c == null || c.exports == null || c.exports.__formSwitch == null) return null;
 	c.exports.__formSwitch(id, attack, label);
 	return null;
@@ -1634,4 +1639,178 @@ function teamSet(o, id) {
 	watch();
 	o.addTimer(1, -1, watch, { persistent: true });
 	return null;
+}
+
+// ---- damageStep
+// the damage an event tells of: the hit's own, or how far an update of its damage moved it (this
+// engine's update tells the new total), from what it was when its code began listening
+var damageWas = self.makeFloat(0);
+var damageNow = self.makeFloat(0);
+function damagePrime() { damageWas.set(self.getDamage()); damageNow.set(self.getDamage()); }
+function damageStep(e) {
+	if (e == null || e.data == null) return 0;
+	if (e.data.hitboxStats != null) return e.data.hitboxStats.damage;
+	if (e.data.damage == null) return 0;
+	if (e.data.damage != damageNow.get()) { damageWas.set(damageNow.get()); damageNow.set(e.data.damage); }
+	return damageNow.get() - damageWas.get();
+}
+
+// ---- standings
+// the match's winners and losers as it stands: the fighters with the most stock left win (the most
+// score, where they are even on stock), the rest lose
+function standings(win) {
+	var cs = match.getCharacters();
+	var best = null;
+	for (c in cs) { var v = c.getLives() * 100000 + c.getDamageCounterScore(); if (best == null || v > best) best = v; }
+	var out = [];
+	for (c in cs) if ((c.getLives() * 100000 + c.getDamageCounterScore() == best) == win) out.push(c);
+	return out;
+}
+
+// ---- otherTimer
+// a timer of another object's, kept by the function it runs so its code can take it off by that
+// function (`removeTimer`), where this engine takes one off by its id
+function otherTimer(o, n, t, h) {
+	if (o == null) return null;
+	var id = o.addTimer(n, t, h, { persistent: true });
+	if (match.globals.__timers == null) match.globals.__timers = [];
+	match.globals.__timers.push({ o: o, h: h, id: id });
+	return id;
+}
+function otherUntimer(o, h) {
+	var ts = match.globals.__timers;
+	if (ts == null || o == null) return;
+	for (t in ts.copy()) if (t.o == o && t.h == h) { if (!o.isDisposed()) o.removeTimer(t.id); ts.remove(t); }
+}
+
+// ---- screenClip
+//: needs clipRecord clipRun clipAdd
+// the HUD's layers (`getHUDBackgroundMC`, `getHUDForegroundMC`): the screen, its middle the
+// layers' origin as the source's HUD sits, and a clip of the library its code makes
+// (`getMCByLinkageName`) and puts there: the effect its clip is drawn as, on the camera's screen
+// layer, a source pixel to a screen pixel, turned as its code turns it. its timeline runs as a clip
+// record's (`clipRun`), each label one of the effect's animations (`anims`: name, first frame,
+// frames, in the timeline's order)
+var screenShown = [];
+var screenTicking = false;
+function screenLayer() { var r = clipRecord(null); r.screen = true; return r; }
+function screenClip(id, anims, ?frames) {
+	var r = clipRecord(id);
+	r.anims = anims;
+	var total = 0;
+	var labels = [];
+	for (a in anims) { labels.push([a[1], a[0]]); if (a[1] + a[2] - 1 > total) total = a[1] + a[2] - 1; }
+	clipRun(r, total < 1 ? 1 : total, labels, frames);
+	return r;
+}
+function screenShow(k) {
+	if (k == null || k.onScreen == true) return;
+	k.onScreen = true;
+	if (k.id != null && k.anims != null && k.drawn == null) {
+		var made = self.getResource().getContent(k.id);
+		k.drawn = made == null ? null : Sprite.create(made);
+		if (k.drawn != null) match.getCamera().getForegroundContainer().addChild(k.drawn);
+	}
+	screenShown.push(k);
+	if (k.kids != null) for (c in k.kids) screenShow(c);
+	if (!screenTicking) { screenTicking = true; self.addTimer(1, -1, screenUpkeep, { persistent: true }); }
+}
+function screenHide(k) {
+	if (k == null || k.onScreen != true) return;
+	k.onScreen = false;
+	if (k.drawn != null) { match.getCamera().getForegroundContainer().removeChild(k.drawn); k.drawn = null; }
+	screenShown.remove(k);
+	if (k.kids != null) for (c in k.kids) screenHide(c);
+}
+function screenUpkeep() {
+	for (k in screenShown) {
+		var sp = k.drawn;
+		if (sp == null) continue;
+		var g = clipGlobal(k, null);
+		var sx = k.scaleX;
+		var sy = k.scaleY;
+		var on = k.visible != false;
+		var at = k.parentOf == null ? null : k.parentOf();
+		var guard = 0;
+		while (at != null && guard < 32) { sx *= at.scaleX == null ? 1 : at.scaleX; sy *= at.scaleY == null ? 1 : at.scaleY; if (at.visible == false) on = false; at = at.parentOf == null ? null : at.parentOf(); guard++; }
+		sp.x = 320 + g.x;
+		sp.y = 180 + g.y;
+		sp.scaleX = sx / SIZE;
+		sp.scaleY = sy / SIZE;
+		sp.alpha = k.alpha;
+		sp.visible = on;
+		// (the frame its timeline is on: the animation of the label it is in, that far in)
+		var f = k.currentFrame == null ? 1 : k.currentFrame;
+		for (a in k.anims) if (f >= a[1] && f < a[1] + a[2]) {
+			if (sp.currentAnimation != a[0]) sp.currentAnimation = a[0];
+			sp.currentFrame = Std.int((f - a[1]) * sp.totalFrames / a[2]) + 1;
+		}
+	}
+}
+
+// ---- hitBoxMeta
+// what the box an event's hit was made with declares of the source's that this engine has no stat
+// for: its attacker's animation's metadata, by the box's number (`boxes`); none reads as nothing
+function hitBoxMeta(e) {
+	var f = e == null || e.data == null ? null : e.data.foe;
+	var hb = e == null || e.data == null ? null : e.data.hitboxStats;
+	if (f == null || hb == null || f.isDisposed()) return { none: true };
+	var m = f.getAnimationStatsMetadata();
+	var b = m == null ? null : m.boxes;
+	if (b == null || hb.index == null || hb.index < 0 || hb.index >= b.length || b[hb.index] == null) return { none: true };
+	return b[hb.index];
+}
+
+// ---- projPart
+//: needs clipRecord clipRun
+// a named child of its clip its code turns (a part): its art drawn apart, a vfx of the part's own
+// timeline riding the object where its clip places it, and a record its code holds and turns as
+// the source turns the clip (its place, turn, size, look, and its timeline, `clipRun`'s), which
+// the vfx follows each frame. made as the object starts, and found again by its name
+var partsShown = [];
+function projPart(n, x, y, r, sx, sy, art, total, labels) {
+	for (p in partsShown) if (p.name == n) return p;
+	var p = clipRecord(null);
+	p.name = n;
+	p.x = x;
+	p.y = y;
+	p.rotation = r;
+	p.scaleX = sx;
+	p.scaleY = sy;
+	p.art = art;
+	p.vfx = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(CONTENT), animation: art, loop: true, timeout: -1 }), self);
+	if (p.vfx != null) p.vfx.pause();
+	clipRun(p, total < 1 ? 1 : total, labels, null);
+	if (partsShown.length == 0) self.addEventListener(EntityEvent.DISPOSE, partsGone, { persistent: true });
+	partsShown.push(p);
+	partsFollow();
+	return p;
+}
+function partsGone(e) {
+	for (p in partsShown) if (p.vfx != null && !p.vfx.isDisposed()) p.vfx.destroy();
+	partsShown = [];
+}
+function partsFollow() {
+	if (partsShown.length == 0) return;
+	var facing = self.isFacingRight() ? 1 : -1;
+	var turn = self.getRotation() * Math.PI / 180;
+	for (p in partsShown) {
+		var v = p.vfx;
+		if (v == null || v.isDisposed()) continue;
+		var dx = p.x * SIZE;
+		var dy = p.y * SIZE;
+		v.setX(self.getX() + facing * (dx * Math.cos(turn) - dy * Math.sin(turn)));
+		v.setY(self.getY() + dx * Math.sin(turn) + dy * Math.cos(turn));
+		if (facing < 0) v.faceLeft(); else v.faceRight();
+		v.setRotation(self.getRotation() + facing * p.rotation);
+		v.setScaleX(p.scaleX * self.getScaleX());
+		v.setScaleY(p.scaleY * self.getScaleY());
+		v.setAlpha(p.alpha);
+		v.setVisible(p.visible != false && self.getVisible());
+		// (the frame its timeline is on: two of the engine's to each of the source's)
+		var f = (p.currentFrame == null ? 1 : p.currentFrame) * 2 - 1;
+		if (v.getAnimation() != p.art) v.playAnimation(p.art);
+		if (v.getCurrentFrame() != f) v.playFrame(f);
+		v.pause();
+	}
 }

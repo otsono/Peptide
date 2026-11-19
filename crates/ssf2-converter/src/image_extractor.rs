@@ -1698,7 +1698,9 @@ pub fn named_children_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<Named
             at: &ImageLocalMatrix, depth: u32, out: &mut Vec<NamedChild>) {
         if depth > 4 { return }
         let Some(tags) = sprite_tags(swf, sprite_id) else { return };
-        let mut seen_depths: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+        // (each depth once per name: a named clip placed later where another was, at the same
+        // depth, is a child too)
+        let mut seen_depths: std::collections::BTreeSet<(u16, String)> = std::collections::BTreeSet::new();
         for tag in tags {
             let swf::Tag::PlaceObject(po) = tag else { continue };
             let cid = match &po.action {
@@ -1709,7 +1711,7 @@ pub fn named_children_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<Named
             if std::env::var("PEPTIDE_DUMP_PARTS").is_ok() {
                 eprintln!("[parts-walk] sprite {sprite_id} depth {} places {cid} (sprite: {}) name '{name}'", po.depth, sprites.contains(&cid));
             }
-            if !sprites.contains(&cid) || !seen_depths.insert(po.depth) { continue }
+            if !sprites.contains(&cid) || !seen_depths.insert((po.depth, name.clone())) { continue }
             let here = at.compose(&po_to_mat(po));
             if name.is_empty() {
                 walk(swf, sprites, cid, &here, depth + 1, out);

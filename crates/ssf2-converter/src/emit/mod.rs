@@ -88,6 +88,26 @@ thread_local! {
     /// the name discovery gave them
     static SCREEN_OBJECTS: std::cell::RefCell<BTreeSet<String>> = Default::default();
 }
+thread_local! {
+    /// the named children of each object's clip its code turns, drawn apart (`projectile_gen`
+    /// `collect_parts`), by the object's content id
+    static OBJECT_PARTS: std::cell::RefCell<BTreeMap<String, Vec<ObjPart>>> = Default::default();
+}
+/// a named child of an object's clip its code turns: drawn apart from the object's art, as the
+/// animation `anim` of the object's entity, where the clip places it (the source's units), with its
+/// timeline's length and labels
+#[derive(Clone, Debug)]
+pub struct ObjPart { pub path: String, pub anim: String, pub at: (f64, f64, f64, f64, f64), pub frames: u16, pub labels: Vec<(String, u16)> }
+/// note an object's parts, as its art was extracted
+pub fn add_object_parts(name: &str, parts: Vec<ObjPart>) {
+    OBJECT_PARTS.with(|c| { c.borrow_mut().insert(crate::projectile_gen::projectile_content_id(name), parts); });
+}
+/// forget every object's parts (a conversion starting)
+pub fn clear_object_parts() { OBJECT_PARTS.with(|c| c.borrow_mut().clear()); }
+/// an object's parts, by its entity key
+pub fn object_parts(key: &str) -> Vec<ObjPart> {
+    OBJECT_PARTS.with(|c| { let c = c.borrow(); c.get(key).or_else(|| c.get(&crate::projectile_gen::projectile_content_id(key))).cloned().unwrap_or_default() })
+}
 /// note the objects this conversion's fighter holds over the screen
 pub fn set_screen_objects(names: BTreeSet<String>) { SCREEN_OBJECTS.with(|c| *c.borrow_mut() = names); }
 /// whether an object (by its entity key) is one its fighter holds over the screen

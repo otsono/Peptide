@@ -24,6 +24,8 @@ pub struct EventTable {
     pub interrupt: BTreeMap<String, String>,
     /// the events the game itself raises for a listener added on the API (the rest it never does)
     pub game: Vec<String>,
+    /// the events the game raises that this engine's match raises itself -> its event
+    pub matched: BTreeMap<String, String>,
 }
 
 pub fn table() -> &'static EventTable {
@@ -43,7 +45,7 @@ pub fn table() -> &'static EventTable {
             Some((k.clone(), (v["code"].as_str()?.to_string(), v["is"].as_str().unwrap_or("any").to_string())))
         }).collect()).unwrap_or_default();
         EventTable { engine: read(&json["engine"]), state: read(&json["state"]), heard_in_animation: heard,
-            record, unrecorded: strings(&json["unrecorded"]), item: read(&json["item"]), interrupt: read(&json["interrupt"]), game: strings(&json["game"]) }
+            record, unrecorded: strings(&json["unrecorded"]), item: read(&json["item"]), interrupt: read(&json["interrupt"]), game: strings(&json["game"]), matched: read(&json["match"]) }
     })
 }
 
@@ -71,7 +73,7 @@ pub fn named(runtime: &super::runtime::Runtime, e: &crate::model::ast::Expr) -> 
 pub fn raised_by_nothing(runtime: &super::runtime::Runtime, name: &str) -> bool {
     let t = table();
     let told_by_code = ["charAttackComplete", "projCollide", "projCollideOwner", "projDestroyed", "itemDestroyed", "enemyDestroyed", "charSelfDestruct", "itemTossed", "charTransform", "charMetalChange"];
-    !(t.engine.contains_key(name) || t.state.contains_key(name) || t.item.contains_key(name) || t.game.iter().any(|g| g == name)
+    !(t.engine.contains_key(name) || t.state.contains_key(name) || t.item.contains_key(name) || t.game.iter().any(|g| g == name) || t.matched.contains_key(name)
         || told_by_code.contains(&name)
         || runtime.files.values().any(|f| f.contains(&format!("\"{name}\""))))
 }

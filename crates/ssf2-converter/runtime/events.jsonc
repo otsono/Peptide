@@ -32,6 +32,13 @@
   // the events the game itself raises for a listener its code adds on the API, as the runtime does:
   // any other one added there is never told
   "game": ["gameTickEnd", "targetBroken"],
+  // the events the game raises that this engine's match raises itself: a listener on the game for
+  // one is the match's own listener for it
+  "match": {
+    "gamePaused":   "MatchEvent.MATCH_PAUSED",
+    "gameUnpaused": "MatchEvent.MATCH_UNPAUSED",
+    "gameEnded":    "MatchEvent.MATCH_ENDED"
+  },
   // the events an item's handler raises itself (`runtime/native/item.hx`): its own listeners for
   // them, the list the handler tells
   "item": {
@@ -76,6 +83,6 @@
   // the other fields the source's engine puts in a record it hands a listener, which nothing above
   // translates yet. a field in neither list is in no record of the source's: reading it gives
   // nothing there, and so it does here
-  "unrecorded": ["attackBoxData", "attackData", "auto", "callerAttackBoxData", "damage", "fromState", "holder",
+  "unrecorded": ["attackBoxData", "attackData", "auto", "callerAttackBoxData", "fromState", "holder",
     "receiverAttackBoxData", "sizeStatus", "target", "toState", "type", "victim"]
 }

@@ -133,6 +133,18 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         .filter_map(|(k, vs)| vs.into_iter().next().map(|v| (k, v))).collect();
 
     let declared = |k: &str| -> Option<String> {
+        // (a stat of one of its boxes, `attackBoxes.attackBox2.paralysis`: what that box declares)
+        if let Some((boxes, rest)) = k.split_once('.') {
+            let (bn, key) = rest.split_once('.')?;
+            if !agreed(boxes) { return None }
+            return Some(match spec.stats.get(boxes).and_then(|b| b.get(bn)).and_then(|b| b.get(key)) {
+                None | Some(Value::Null) => "null".into(),
+                Some(Value::Num(n)) => num(*n),
+                Some(Value::Bool(b)) => b.to_string(),
+                Some(Value::Str(s)) => compile::quote(s),
+                _ => return None,
+            });
+        }
         if let Some(v) = written_only.get(k) { return Some(compile::quote(v)) }
         if !agreed(k) { return None }
         Some(match spec.stats.get(k) {
@@ -245,9 +257,10 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false,
+        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false, own_parts: crate::emit::object_parts(entity_key),
     };
-    let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
+    let wrote = !(bare || (classes.is_empty() && itself.is_none()));
+    let written = if wrote { native::write(&object)? } else { native::Written::default() };
 
     // its script
     // (an item that declares no lifetime lasts until its own code ends it: a bob-omb walks, counts
@@ -261,6 +274,9 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let first = pieces.iter().find(|p| p.fm_name == start && p.from == 1).and_then(|p| written.frames.get(&(p.sym, 1)));
     let reversible = !matches!(spec.stats.get("canBeReversed"), Some(Value::Bool(false)));
     let mut functions = written.functions.clone();
+    // (its parts, drawn apart from its art where its clip places them, `projPart`: where its code
+    // is written, which carries the helper)
+    let parts = if wrote { crate::emit::object_parts(entity_key) } else { Vec::new() };
     if !taken.code.is_empty() {
         functions.push(format!("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n{}", taken.code.join("\n")));
     }
@@ -286,6 +302,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         update.push("touchFrame();".into());
     }
     update.extend(taken.frame.iter().cloned());
+    if !parts.is_empty() { update.push("partsFollow();".into()); }
     // its clip playing on from one animation into the next
     let on: Vec<String> = plays_into(model, pieces).iter().map(|(a, b)| format!("case {}: self.playAnimation({});", compile::quote(a), compile::quote(b))).collect();
     if !on.is_empty() {
@@ -294,6 +311,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     }
     // the rate it hits again at, declared or written by its code
     let mut starts = taken.starts.clone();
+    for p in &parts { starts.push(format!("{};", native::part_call(p))); }
     let mut publish_refresh = false;
     if refresh.is_some() || written.blocks.contains("refresh") {
         functions.push(native::helper(runtime, "refresh", "projectile", "", &[], &[])?);

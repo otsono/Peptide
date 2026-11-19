@@ -280,8 +280,9 @@
   // true is not landed (dedede's attacks pass through his own gordo, a popped balloon hurts no one)
   "setHurtInterrupt": { "code": "hurtInterrupt({self}, {0})", "helper": "hurtInterrupt" },
   // the match's winners and losers, which this engine tells no fighter while it plays
-  "PeptideAPI.getWinners": { "code": "[]", "returns": "object", "gap": "getWinners: the match's winners" },
-  "PeptideAPI.getLosers": { "code": "[]", "returns": "object", "gap": "getLosers: the match's losers" },
+  // the match's winners and losers as it stands (`standings`)
+  "PeptideAPI.getWinners": { "code": "standings(true)", "helper": "standings", "returns": "object" },
+  "PeptideAPI.getLosers": { "code": "standings(false)", "helper": "standings", "returns": "object" },
   // two objects' boxes against each other, each by the source's kind of box: where they meet
   "PeptideAPI.hitboxTest": { "code": "boxesMeet({0}, {1}, {2}, {3})", "helper": "boxesMeet", "returns": "object" },
   // the colours it is drawn in, changed by its code: each colour it lists drawn as its replacement
@@ -341,8 +342,9 @@
   "setCostume": "{self}.setCostumeIndex(Std.int({0}))",
   // its box on the HUD, which the engine draws itself: a clip record with nothing in it
   "getHealthBox": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "its HUD box, which the engine draws itself" },
-  "hudBack": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD background: drawn nowhere here (nor on the runtime)" },
-  "hudFront": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD foreground: drawn nowhere here (nor on the runtime)" },
+  // the HUD's layers: the screen (`screenClip`)
+  "hudBack": { "code": "screenLayer()", "helper": "screenClip", "returns": "record" },
+  "hudFront": { "code": "screenLayer()", "helper": "screenClip", "returns": "record" },
   // a list turned back to front, and the list itself handed back (this engine's turns it and hands
   // back nothing)
   "reverse": { "code": "reversedList({self})", "helper": "reversedList", "returns": "object" },
@@ -640,7 +642,7 @@
   // turning into another fighter of the package (`replaceCharacter(id, attack, label)`): the
   // fighter's own other form, where its conversion merged the two (`__formSwitch`), going on in
   // that form's attack at the label; a fighter with no such form stays as it is
-  "swapFighter": {"code": "formSwitch({self}, {0}, {1}, {2})", "helper": "formSwitch", "returns": "object"},
+  "swapFighter": {"code": "formSwitch({self}, {0}{,1}{,2})", "helper": "formSwitch", "returns": "object"},
   "throbDamage": "null",
   // its final form: the special form its declaration names, for the time it states, then back
   // (where its conversion merged the two, `__finalForm`)
@@ -680,7 +682,7 @@
   "PeptideAPI.spawnCharacter": { "code": "null", "returns": "object", "gap": "spawnCharacter: a fighter put in the match by code" },
   "setHumanControl": { "code": "", "gap": "setHumanControl: a player's control handed to another fighter" },
   "grantFinalSmash": { "code": "false", "returns": "bool", "gap": "grantFinalSmash: a final smash given by code" },
-  "setLives": { "code": "", "gap": "setLives: a fighter's stock set by code" },
+  "setLives": "{self}.setLives(Std.int({0}))",
   "PeptideAPI.triggerUnlock": { "code": "", "gap": "triggerUnlock: the game's unlockables" },
   // a timer taken off by the function it runs, where this engine takes one off by its id
   "removeTimer": { "code": "", "gap": "removeTimer: a timer taken off by the function it runs" },

@@ -1322,6 +1322,7 @@ fn process_character(
         || crate::projectile_gen::parse_abcs(parsed_swf).iter().any(|abc| abc.classes.iter()
             .any(|c| abc_parser::extract_class_methods(abc, &c.name).values().any(|code| code.contains("triggerFSCutscene("))));
     crate::emit::set_screen_objects(Default::default());
+    crate::emit::clear_object_parts();
     if plays_cutscene {
         let want = format!("{}_hud", char_data.linkage_id.as_deref().unwrap_or(char_name).to_lowercase());
         let link: Option<String> = parsed_swf.tags.iter().filter_map(|t| if let swf::Tag::SymbolClass(l) = t { Some(l) } else { None }).flatten()

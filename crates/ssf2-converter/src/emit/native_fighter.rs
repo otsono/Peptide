@@ -256,7 +256,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
             if super::plays_once(model, p).is_some() { return None }
             super::effect_code(model, ps).map(|c| (n.clone(), c))
         }).collect(),
-        instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(),
+        instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(), own_parts: Vec::new(),
     };
     // (`all`: every statement it has no plain form for, as reasons, for the census)
     if all {
@@ -345,8 +345,10 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     if blocks.contains("jump_in_attack") { keys.insert("allowJump".into()); }
     if blocks.contains("air_cancel") { for k in cancel_keys { keys.insert(k.into()); } }
     // (and what a box declares that this engine keeps no field for, which its code may read back)
-    let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround",
-        "paralysis", "priority", "shieldDamage"];
+    // (with every box stat this engine has no field for, `hitbox_stats.jsonc` `no_counterpart`)
+    let mut box_keys: Vec<String> = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround"]
+        .iter().map(|k| k.to_string()).collect();
+    for k in &crate::mappings::character_hitbox_stats().no_counterpart { if !box_keys.contains(k) { box_keys.push(k.clone()); } }
     // (each animation carries what the source says of it as its metadata: the label it shows, the
     // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
     // engine has no stat for, and its boxes' by the source's box number)
