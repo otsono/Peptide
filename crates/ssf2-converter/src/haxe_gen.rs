@@ -3490,6 +3490,18 @@ impl BorrowedFrom {
         entity_gen::generate_effect_entity(char_id, effect, &self.images, &parsed)
     }
 }
+thread_local! {
+    /// the effects what this conversion borrows from another package names (`attachEffect("x")`
+    /// in a lent object's code: a pokemon's flame), set before the effects are gathered
+    static LENT_EFFECTS: std::cell::RefCell<std::collections::BTreeSet<String>> = Default::default();
+}
+
+/// note the effects the code borrowed from other packages names, for the effects gathered next
+pub fn set_lent_effect_code(code: &[String]) {
+    let re = crate::re!(r#"attachEffect(?:Overlay)?\(\s*"([^"]+)""#);
+    let names = code.iter().flat_map(|c| re.captures_iter(c).map(|m| m[1].to_string()).collect::<Vec<_>>()).collect();
+    LENT_EFFECTS.with(|c| *c.borrow_mut() = names);
+}
 
 /// Bring across the effects this character NAMES but does not carry.
 ///
@@ -3516,6 +3528,7 @@ fn import_shared_effects(
     if let Some(model) = std::fs::read(input_path).ok().and_then(|b| crate::model::SourceModel::read(&b).ok()) {
         named.extend(attach_effect_names(&model));
     }
+    named.extend(LENT_EFFECTS.with(|c| c.borrow().clone()));
     let mut want: std::collections::BTreeSet<String> = named.into_iter()
         .filter(|n| !carried.contains(n.as_str()) && !global.contains_key(n))
         .collect();

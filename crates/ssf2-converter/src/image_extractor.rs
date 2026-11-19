@@ -1490,7 +1490,7 @@ pub(crate) fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> 
             let mut rgba = Vec::with_capacity(w * h * 4);
             if bmp.version == 2 {
                 // ARGB premultiplied
-                for pixel in decompressed.chunks_exact(4) {
+                for pixel in decompressed.as_chunks::<4>().0 {
                     let a = pixel[0];
                     let r = pixel[1];
                     let g = pixel[2];
@@ -1505,7 +1505,7 @@ pub(crate) fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> 
                     }
                 }
             } else {
-                for pixel in decompressed.chunks_exact(4) {
+                for pixel in decompressed.as_chunks::<4>().0 {
                     let r = pixel[1];
                     let g = pixel[2];
                     let b = pixel[3];
@@ -2394,6 +2394,26 @@ pub fn discover_projectiles_by_linkage(swf: &swf::Swf<'_>, linkages: &[String]) 
         let Some(name) = symbols.get(&sprite.id).cloned() else { continue };
         if !linkages.iter().any(|l| l.eq_ignore_ascii_case(&name)) { continue }
         let mut p = projectile_of_sprite(swf, &symbols, sprite, name);
+        // (a clip of one frame that holds one clip of its own and nothing else: the clip inside
+        // is its art, its timeline and labels the ones that move)
+        if p.inner_sprite_id.is_none() && sprite.num_frames <= 1 {
+            let placed: Vec<(u16, Option<swf::Matrix>)> = sprite.tags.iter().filter_map(|t| match t {
+                swf::Tag::PlaceObject(po) => match &po.action { swf::PlaceObjectAction::Place(id) => Some((*id, po.matrix)), _ => None },
+                _ => None,
+            }).collect();
+            let inner = match placed.as_slice() {
+                [(id, m)] => swf.tags.iter().find_map(|t| match t { swf::Tag::DefineSprite(s) if s.id == *id && s.num_frames > 1 => Some((s, *m)), _ => None }),
+                _ => None,
+            };
+            if let Some((child, m)) = inner {
+                p.inner_sprite_id = Some(child.id);
+                p.inner_sprite_name = Some(symbols.get(&child.id).cloned().unwrap_or_else(|| p.name.clone()));
+                p.inner_frame_count = child.num_frames.max(1);
+                p.inner_stance = m.map(|m| ImageLocalMatrix::from_abcd(m.a.to_f64(), m.b.to_f64(), m.c.to_f64(), m.d.to_f64(),
+                    m.tx.get() as f64 / 20.0, m.ty.get() as f64 / 20.0)).unwrap_or_default();
+                p.inner_labels = sprite_labels(swf, child.id);
+            }
+        }
         if p.inner_sprite_id.is_none() {
             p.inner_sprite_id = Some(sprite.id);
             p.inner_sprite_name = Some(p.name.clone());
@@ -3024,7 +3044,7 @@ fn mask_alpha_at(m: &Piece, peak: f64, x: f64, y: f64) -> f64 {
 
 /// The most opaque pixel in a raster, as a 0-255 value.
 fn peak_alpha(r: &crate::vector_raster::Raster) -> f64 {
-    r.rgba.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0) as f64
+    r.rgba.as_chunks::<4>().0.iter().map(|px| px[3]).max().unwrap_or(0) as f64
 }
 
 /// A rectangle of an RGBA image.
@@ -3078,6 +3098,11 @@ fn note_borrowed(name: &str, bytes: &[u8]) {
 /// The package a projectile's clip was borrowed from, by the projectile's content id, where it was
 pub fn borrowed_package(name: &str) -> Option<std::rc::Rc<Vec<u8>>> {
     BORROWED.with(|b| b.borrow().get(&crate::projectile_gen::projectile_content_id(name)).cloned())
+}
+thread_local! {
+    /// a class asked for by name whose stated clip its own package does not carry: by the wanted
+    /// id, the class, the clip's linkage, and the package the class is in
+    static ELSEWHERE: std::cell::RefCell<BTreeMap<String, (String, String, Vec<u8>)>> = Default::default();
 }
 
 /// A PROJECTILE A CHARACTER SPAWNS THAT ITS OWN FILE DOES NOT CARRY. The game keeps shared
@@ -3157,6 +3182,70 @@ pub fn pull_shared_projectiles(
             }
             if !mine.is_empty() {
                 log::info!("{} projectile(s) came across from {from}", mine.len());
+                for p in &mine { note_borrowed(&p.name, bytes); }
+                got.extend(mine);
+            }
+        }
+        // a clip bound to a class the code makes by that class (an enemy a list hands out):
+        // found by its linkage whatever its labels, as the source names it. a fighter package's
+        // own fighter (the clip its stats class is named for) is never another's object
+        let own_fighters: Vec<String> = abcs.iter().flat_map(|a| a.classes.iter())
+            .filter_map(|c| c.name.strip_suffix("Ext").filter(|s| !s.is_empty() && c.name != "SSF2CharacterExt").map(|s| s.to_ascii_lowercase()))
+            .collect();
+        let linked: Vec<String> = parsed.tags.iter().filter_map(|t| if let swf::Tag::SymbolClass(l) = t { Some(l) } else { None })
+            .flatten()
+            .map(|l| l.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string())
+            .filter(|n| !n.is_empty() && want.contains(&crate::projectile_gen::projectile_content_id(n)))
+            .filter(|n| !own_fighters.contains(&n.to_ascii_lowercase()))
+            .collect();
+        // (a class of this package wanted by its name: the clip its own stats name as its art)
+        let mut mine: Vec<DiscoveredProjectile> = Vec::new();
+        for id in want.iter().cloned().collect::<Vec<_>>() {
+            let Some((abc, class)) = abcs.iter().find_map(|abc| abc.classes.iter()
+                .find(|c| crate::projectile_gen::projectile_content_id(c.name.rsplit(['.', ':']).next().unwrap_or(&c.name)) == id)
+                .map(|c| (abc, c.name.rsplit(['.', ':']).next().unwrap_or(&c.name).to_string()))) else { continue };
+            let Some(link) = crate::abc_parser::extract_own_linkage_for(abc, &class) else { continue };
+            if let Some(mut p) = discover_projectiles_by_linkage(&parsed, std::slice::from_ref(&link)).into_iter().next() {
+                p.name = class;
+                want.remove(&id);
+                mine.push(p);
+            } else {
+                // (its clip lives in another package: looked for there by the linkage it states)
+                ELSEWHERE.with(|e| { e.borrow_mut().insert(id.clone(), (class.clone(), link.clone(), bytes.to_vec())); });
+            }
+        }
+        // (a shot a class of this package declares it fires, `getProjectileStats`: the clip that
+        // declaration names, under the name it is fired by)
+        if !want.is_empty() {
+            for abc in &abcs {
+                for c in &abc.classes {
+                    let class = c.name.rsplit(['.', ':']).next().unwrap_or(&c.name).to_string();
+                    for (name, decl) in crate::abc_parser::extract_projectiles_for(abc, &class) {
+                        let id = crate::projectile_gen::projectile_content_id(&name);
+                        if !want.contains(&id) { continue }
+                        let Some(link) = decl.names.get("linkage_id") else { continue };
+                        if let Some(mut p) = discover_projectiles_by_linkage(&parsed, std::slice::from_ref(link)).into_iter().next() {
+                            p.name = name.clone();
+                            want.remove(&id);
+                            mine.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        if !mine.is_empty() {
+            log::info!("{} class(es) asked for by name came across from {from}, each on the clip it declares", mine.len());
+            for p in &mine { note_borrowed(&p.name, bytes); }
+            got.extend(mine);
+        }
+        let linked: Vec<String> = linked.into_iter().filter(|n| want.contains(&crate::projectile_gen::projectile_content_id(n))).collect();
+        if !linked.is_empty() {
+            let mut mine = Vec::new();
+            for p in discover_projectiles_by_linkage(&parsed, &linked) {
+                if want.remove(&crate::projectile_gen::projectile_content_id(&p.name)) { mine.push(p); }
+            }
+            if !mine.is_empty() {
+                log::info!("{} clip(s) bound to the classes asked for came across from {from}", mine.len());
                 for p in &mine { note_borrowed(&p.name, bytes); }
                 got.extend(mine);
             }
@@ -3250,6 +3339,27 @@ pub fn pull_shared_projectiles(
     if !want.is_empty() {
         if let Some(movie) = crate::shared_packages::game_movie() {
             take(movie, "the game's own movie", "", want, &mut got);
+        }
+    }
+    // a class whose stated clip is another package's: that clip, wherever the game keeps it, run
+    // by the class (its code is noted as the class's package, its pictures as the clip's)
+    let elsewhere: Vec<(String, (String, String, Vec<u8>))> = ELSEWHERE.with(|e| std::mem::take(&mut *e.borrow_mut())).into_iter()
+        .filter(|(id, _)| want.contains(id)).collect();
+    if !elsewhere.is_empty() {
+        let packages: Vec<(String, Vec<u8>)> = crate::shared_packages::every_package().into_iter().chain(crate::shared_packages::all_data_packages()).collect();
+        for (id, (class, link, _)) in elsewhere {
+            for (pid, bytes) in &packages {
+                let Ok(buf) = swf::decompress_swf(&bytes[..]) else { continue };
+                let Ok(parsed) = swf::parse_swf(&buf) else { continue };
+                if let Some(mut p) = discover_projectiles_by_linkage(&parsed, std::slice::from_ref(&link)).into_iter().next() {
+                    log::info!("'{class}' draws with '{link}', which came across from the '{pid}' package");
+                    p.name = class.clone();
+                    note_borrowed(&p.name, bytes);
+                    want.remove(&id);
+                    got.push(p);
+                    break;
+                }
+            }
         }
     }
     got

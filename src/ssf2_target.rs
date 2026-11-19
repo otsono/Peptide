@@ -261,7 +261,7 @@ pub fn ssf2_label_for(fm_name: &str) -> Option<String> {
         if let Some(found) = ssf2_label_exactly(&want) { return Some(found) }
         let trimmed = want.trim_end_matches(|c: char| c.is_ascii_digit());
         let next = if trimmed.len() < want.len() { trimmed.to_string() }
-            else { match want.rfind('_') { Some(i) => want[..i].to_string(), None => return None } };
+            else { want[..want.rfind('_')?].to_string() };
         if next.is_empty() || next == want { return None }
         want = next;
     }

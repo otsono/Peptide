@@ -72,6 +72,11 @@ pub fn own_jumps(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> cr
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| p.sym == sym && f >= p.from && f < p.from + p.frames).collect();
             let at = if let [p] = hits.as_slice() { Some(*p) } else { hits.iter().find(|p| p.from == f).copied() };
+            // (a label whose frames place a clip of its own, played whole as its own animation, where
+            // the clip's own timeline holds it for fewer frames than it runs: that animation)
+            let window = at.map(|p| if f == p.from { p.frames } else { p.frames.saturating_sub(f - p.from) }).unwrap_or(0);
+            let state = pieces.iter().find(|p| p.sym != sym && p.label == *label && p.from == 1 && !p.borrowed && p.frames > window);
+            if let Some(p) = state { j.labels.insert(label.clone(), (p.fm_name.clone(), true)); continue }
             if let Some(p) = at { j.labels.insert(label.clone(), (p.fm_name.clone(), f == p.from)); }
         }
     }
@@ -91,6 +96,11 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
             // (where the whole clip and the label's own cut both show it, the cut that starts there)
             let at = if let [p] = hits.as_slice() { Some(*p) } else { hits.iter().find(|p| p.from == f).copied() };
+            // (a label whose frames place a clip of its own, played whole as its own animation, where
+            // the clip's own timeline holds it for fewer frames than it runs: that animation)
+            let window = at.map(|p| if f == p.from { p.frames } else { p.frames.saturating_sub(f - p.from) }).unwrap_or(0);
+            let state = pieces.iter().find(|p| p.sym != sym && p.label == *label && p.from == 1 && !p.borrowed && p.frames > window);
+            if let Some(p) = state { j.labels.insert(label.clone(), (p.fm_name.clone(), true)); continue }
             if let Some(p) = at { j.labels.insert(label.clone(), (p.fm_name.clone(), f == p.from)); }
         }
         out.insert(c.name.clone(), j);
@@ -741,16 +751,28 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                     let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
                     let has = entity_animations(&entity);
                     let pieces: Vec<Piece> = pieces.iter().filter(|p| has.contains(&p.fm_name)).cloned().collect();
-                    let (decls, title, stats, class, clip) = match &found {
-                        Some((f, n, d)) => (Decls::of(f), n.clone(), d.clone(),
+                    // (declared by none of its fighters: a class of that package whose own stats name
+                    // its clip, or a class by its name (an enemy a list hands out), runs it)
+                    let own_stats = |c: &crate::model::ClassModel| c.methods.iter().find(|x| x.name == "ownStats" && !x.is_static)
+                        .and_then(|x| crate::model::declare::returned(&x.function.body));
+                    let enemy = if found.is_some() { None } else {
+                        m.classes.values().find(|c| own_stats(c).is_some_and(|v| v.get("linkage_id").and_then(|l| l.str()).is_some_and(|l| l.eq_ignore_ascii_case(&entity_key))))
+                            .or_else(|| m.classes.values().find(|c| compile::short(&c.name).eq_ignore_ascii_case(&entity_key) && own_stats(c).is_some()))
+                    };
+                    let (decls, title, stats, class, clip) = match (&found, enemy) {
+                        (Some((f, n, d)), _) => (Decls::of(f), n.clone(), d.clone(),
                             d.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
                             d.get("linkage_id").and_then(|v| v.str()).unwrap_or(&entity_key).to_string()),
-                        None => (Decls::of(fighter), entity_key.clone(), Value::Null, "PeptideProjectile".to_string(), entity_key.clone()),
+                        (None, Some(c)) => (Decls::of(fighter), entity_key.clone(), own_stats(c).unwrap_or(Value::Null), c.name.clone(),
+                            own_stats(c).and_then(|v| v.get("linkage_id").and_then(|l| l.str()).map(String::from)).unwrap_or_else(|| entity_key.clone())),
+                        (None, None) => (Decls::of(fighter), entity_key.clone(), Value::Null, "PeptideProjectile".to_string(), entity_key.clone()),
                     };
+                    let declared_by_class = enemy.is_some();
+                    if declared_by_class { declare_in_stats(char_dir, &entity_key, &stats)?; }
                     let spec = ObjectSpec { effects, entities, class, clip, clip_sym: Some(sym), stats };
                     let (text, mut gaps) = native_projectile::write(char_dir, m, runtime, &spec, &decls, &pieces, units, &title, &entity_key, owner, false)
                         .map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
-                    if found.is_none() { gaps.push("declared by nothing its package carries: its stats are the engine's defaults".into()); }
+                    if found.is_none() && !declared_by_class { gaps.push("declared by nothing its package carries: its stats are the engine's defaults".into()); }
                     std::fs::write(&script, &text)?;
                     unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
                     out.push((entity_key, gaps));

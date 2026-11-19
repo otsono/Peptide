@@ -43,8 +43,8 @@ function update() {
 	}
 	// (one its first frame's code ended runs nothing more)
 	if (self.isDisposed()) return;
-	// its lifetime runs out
-	if (age.inc() >= life.get()) {
+	// its lifetime runs out (one with none, an enemy, lasts until its own code ends it)
+	if (age.inc() >= life.get() && life.get() >= 0) {
 		self.kill();
 		return;
 	}

@@ -52,6 +52,9 @@ pub enum BoxType {
     /// A box the source keeps for its own bookkeeping (camera framing, a catch or range test):
     /// it collides with nothing
     InertBox,
+    /// A box the source's own code tests against (`customBox`): it takes no hits, only the
+    /// object's tests (`hitboxTest`) read it, here as the engine's custom box b
+    CustomBox,
     /// Ledge grab box
     LedgeBox,
     /// Grab hold point (where grabbed opponent is held)
@@ -99,6 +102,8 @@ impl BoxType {
             Some(BoxType::LedgeBox)
         } else if lower.starts_with("touchbox") {
             Some(BoxType::GrabHoldBox)
+        } else if lower.starts_with("custombox") {
+            Some(BoxType::CustomBox)
         } else if lower.ends_with("box") {
             // generic fallback — treat unknown *box as hurtbox
             Some(BoxType::Hurtbox)
@@ -112,10 +117,9 @@ impl BoxType {
     /// box (hurt / hit / grab / shield / reflect / absorb / ledge /
     /// grab-hold) is axis-aligned in the engine, so a rotated source box
     /// must be collapsed into its axis-aligned bounding box with
-    /// rotation = 0 before emission. We never emit a custom-box type, so
-    /// `ItemBox` is the only rotation-honoring case today.
+    /// rotation = 0 before emission.
     pub fn supports_rotation(&self) -> bool {
-        matches!(self, BoxType::ItemBox)
+        matches!(self, BoxType::ItemBox | BoxType::CustomBox)
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -129,6 +133,7 @@ impl BoxType {
             BoxType::AbsorbBox => "ABSORB_BOX",
             BoxType::CounterBox => "COUNTER_BOX",
             BoxType::InertBox => "INERT_BOX",
+            BoxType::CustomBox => "CUSTOM_BOX",
             BoxType::LedgeBox  => "LEDGE_BOX",
             BoxType::GrabHoldBox => "GRAB_HOLD_BOX",
         }

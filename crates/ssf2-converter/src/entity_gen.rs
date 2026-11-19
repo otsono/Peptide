@@ -47,6 +47,7 @@ fn box_type_to_fm(bt: BoxType) -> &'static str {
         BoxType::AbsorbBox  => "ABSORB_BOX",
         BoxType::CounterBox => "COUNTER_BOX",
         BoxType::InertBox   => "NONE",
+        BoxType::CustomBox  => "CUSTOM_BOX_B",
         BoxType::LedgeBox    => "LEDGE_GRAB_BOX",
         // GrabHoldBox uses a POINT layer, not COLLISION_BOX — handled separately.
         BoxType::GrabHoldBox  => "GRAB_HOLD_POINT",
@@ -98,6 +99,8 @@ fn ssf2_box_name_to_fm(inst_name: &str) -> String {
             format!("ledgegrabbox{}", index),
         p if p.starts_with("touchbox") =>
             format!("grabholdpoint{}", index),
+        p if p.starts_with("custombox") =>
+            format!("customboxb{}", index),
         _ => format!("{}{}", prefix_lower.trim_end_matches('_'), index),
     }
 }
@@ -172,6 +175,7 @@ fn box_color(bt: BoxType) -> &'static str {
         BoxType::AbsorbBox  => "0x42ecff",
         BoxType::CounterBox => "0x42ecff",
         BoxType::InertBox   => "0x888888",
+        BoxType::CustomBox  => "0xd1d1d1",
         BoxType::LedgeBox    => "0xbababa",
         BoxType::GrabHoldBox => "0x9999ff",  // light blue
     }

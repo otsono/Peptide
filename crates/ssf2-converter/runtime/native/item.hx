@@ -228,7 +228,7 @@ function handleItem() {
 			if (c.isDisposed() || knocked(c) || !canTake(c)) continue;
 			var ctl = c.getPressedControls();
 			if (ctl == null || (!ctl.GRAB && !ctl.ATTACK)) continue;
-			if (Math.abs(c.getX() - self.getX()) > HALF_WIDTH + 30 || self.getY() < c.getY() - (c.getEcbFootY() - c.getEcbHeadY()) - HEIGHT_UP || self.getY() > c.getY() + 20) continue;
+			if (!within(c)) continue;
 			pickUpBy(c);
 			return;
 		}
@@ -258,6 +258,17 @@ function canTake(c) {
 	if (c.inStateGroup(CStateGroup.ATTACK)) return c.getCurrentFrame() <= 1;
 	return !c.inState(CState.SHIELD_IN) && !c.inState(CState.SHIELD_LOOP) && !c.inState(CState.SHIELD_OUT)
 		&& !c.inState(CState.GRAB) && !c.inState(CState.GRAB_HOLD) && !c.inState(CState.LEDGE_HANG);
+}
+// whether it lies where a fighter can reach it from where it stands
+function within(c) {
+	return Math.abs(c.getX() - self.getX()) <= HALF_WIDTH + 30 && self.getY() >= c.getY() - (c.getEcbFootY() - c.getEcbHeadY()) - HEIGHT_UP && self.getY() <= c.getY() + 20;
+}
+// taken up by a fighter's own code (`pickupItem`): lying free within its reach, it is picked up
+// as a press would pick it up
+function takenBy(c) {
+	if (c == null || c.isDisposed() || !inItemState(0) || !canTake(c) || !within(c)) return false;
+	pickUpBy(c);
+	return true;
 }
 // picked up: the fighter plays its pickup stance where it has one, in place of the attack the
 // press started. a fighter that makes items of its own takes it into its own hand (its code
@@ -311,6 +322,7 @@ function initialize() {
 	self.setState(PState.ACTIVE);
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
+	self.exports.__takeBy = takenBy;
 	self.exports.__inItemState = inItemState;
 	// (the one that made it, kept for its code's asks of its maker once its blast is anyone's)
 	self.exports.__maker = self.getOwner();

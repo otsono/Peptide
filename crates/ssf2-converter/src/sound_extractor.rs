@@ -130,7 +130,7 @@ fn convert_pcm_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     let mut pcm = entry.data.clone();
     if entry.fmt == FMT_UNCOMPRESSED && entry.bits16 {
         // Native-endian Flash PCM is big-endian; swap 16-bit sample byte pairs.
-        for pair in pcm.chunks_exact_mut(2) {
+        for pair in pcm.as_chunks_mut::<2>().0 {
             pair.swap(0, 1);
         }
     }

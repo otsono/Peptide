@@ -1110,6 +1110,18 @@ fn process_character(
                     .and_then(|movie| swf::parse_swf(&movie).ok().map(|parsed| crate::projectile_gen::parse_abcs(&parsed)))
                     .unwrap_or_default();
                 let mut theirs: Vec<String> = crate::projectile_gen::all_behaviour(&lent, p).into_values().collect();
+                // (and the frame code of every clip under its art, which plays its sounds too: a
+                // pokemon's flame roars from the clip its flamethrower shows)
+                if let Ok(movie) = swf::decompress_swf(&bytes[..]) {
+                    if let Ok(parsed) = swf::parse_swf(&movie) {
+                        let roots: Vec<u16> = std::iter::once(p.sprite_id).chain(p.inner_sprite_id).chain(p.states.iter().map(|s| s.inner_sprite_id)).collect();
+                        let under = image_extractor::ids_under_sprites(&parsed, &roots);
+                        let bound: Vec<String> = parsed.tags.iter().filter_map(|t| if let swf::Tag::SymbolClass(l) = t { Some(l) } else { None }).flatten()
+                            .filter(|l| under.contains(&l.id))
+                            .map(|l| l.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string()).collect();
+                        for c in bound { for abc in &lent { theirs.extend(crate::abc_parser::extract_class_methods(abc, &c).into_values()); } }
+                    }
+                }
                 // (and the class its owner's declaration there names for it)
                 let rt = crate::compile::Runtime::locate().map(|d| crate::compile::Runtime::load(&d)).unwrap_or_default();
                 if let Ok((m, _)) = rt.read_package(&bytes) {
@@ -1123,6 +1135,9 @@ fn process_character(
                         .or_else(|| m.main_class().and_then(|mc| mc.methods.iter()
                             .filter_map(|meth| match crate::model::declare::returned(&meth.function.body) { Some(crate::model::declare::Value::Arr(l)) => Some(l), _ => None })
                             .flatten().find(|d| named(d)).and_then(|d| d.get("classAPI").and_then(|v| v.class()).map(String::from))));
+                    // (else a class of that package by the name it was made under: an enemy a list
+                    // hands out is made by its class)
+                    let class = class.or_else(|| m.classes.keys().find(|k| crate::compile::short(k).eq_ignore_ascii_case(&p.name)).map(|k| crate::compile::short(k).to_string()));
                     if let Some(c) = class {
                         for abc in &lent { theirs.extend(crate::abc_parser::extract_class_methods(abc, &c).into_values()); }
                     }
@@ -1216,6 +1231,7 @@ fn process_character(
         }
         lent_code = projectiles.iter().filter(|p| image_extractor::borrowed_package(&p.name).is_some())
             .flat_map(&mut behaviour).collect();
+        crate::haxe_gen::set_lent_effect_code(&lent_code);
     }
     // A SOUND SOMETHING BORROWED FROM ANOTHER PACKAGE PLAYS (a bob-omb's fuse and blast): asked of
     // the shared packages the way the character's own are

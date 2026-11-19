@@ -2376,7 +2376,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 .filter_map(|s| self.o.model.sprites.get(&s)).any(|sp| sp.labels.iter().any(|(_, l)| l == label));
             if !anywhere { return Ok(format!("// (the source jumps to {label} here, which its clip does not have)")) }
         }
-        let unique = self.o.jumps.get(&self.class).and_then(|j| j.labels.get(label)).cloned();
+        let unique = self.o.jumps.get(&self.class).and_then(|j| j.labels.get(label)).cloned()
+            // (an object whose class names its clip rather than being bound to it, an enemy: the
+            // labels of the clip it draws with)
+            .or_else(|| if self.is_itself() && !self.o.fighter {
+                self.o.model.class_of(self.o.root).and_then(|c| self.o.jumps.get(&c.name)).and_then(|j| j.labels.get(label)).cloned()
+            } else { None });
         // a fighter's clip label that several animations show, or none: the one playing, if it
         // shows it (a ground and an air animation showing one clip whole stay apart, as the engine
         // links them); a part of the clip none shows is one this engine never plays
@@ -3248,7 +3253,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 for b in format!("{kv:?}").bytes() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); }
                 let f = format!("entryOf{:x}", h & 0xffffff);
                 if !self.helpers.contains_key(&f) {
-                    let mut lines = vec![format!("// an entry of a record its code writes out, by a name worked out as it runs"), format!("function {f}(k) {{"), "\tswitch (k) {".to_string()];
+                    let mut lines = vec!["// an entry of a record its code writes out, by a name worked out as it runs".to_string(), format!("function {f}(k) {{"), "\tswitch (k) {".to_string()];
                     for (k, v) in &kv {
                         let Expr::Str(k) = k else { return Err("reads a record by a name worked out as it runs".into()) };
                         let (v, _) = self.expr(v)?;
@@ -4356,6 +4361,48 @@ impl<'o, 'a> Writer<'o, 'a> {
                     return Ok((if m == "hitTestGround" { format!("groundAt({0}, {1}, {2})", opt(0), opt(1), opt(2)) }
                         else { format!("(({0}) == null || ({1}) == null ? null : groundBetween(({0}).x, ({0}).y, ({1}).x, ({1}).y, {2}))", opt(0), opt(1), opt(2)) }, Ty::Object));
                 }
+                // a clip recoloured by its code, the clip being the one the object draws with (its
+                // own clip class's `this`): the object itself
+                (_, "replacePalette", [Expr::This, pal, ..]) if c.contains("PeptideUtils") => {
+                    let (pal, _) = self.expr(pal)?;
+                    self.util("paletteOn")?;
+                    return Ok((format!("paletteOn(self, {pal})"), Ty::Any));
+                }
+                // a list the game hands out (`getPokemonStatsList`): the classes its package
+                // registers in it, by name, the list asked for (else the call's own default)
+                (_, call, rest) if c.contains("PeptideAPI") && crate::api_mappings::REGISTERED_LISTS.iter().any(|(k, ..)| *k == call) => {
+                    let (_, package, prop) = crate::api_mappings::REGISTERED_LISTS.iter().find(|(k, ..)| *k == call).copied().unwrap_or_default();
+                    let lists = crate::shared_packages::registered_lists(package, prop);
+                    if lists.is_empty() { return Err(format!("reads the list the {package} package registers, which no package here registers")) }
+                    let which = match rest.first() { Some(x) => self.expr(x)?.0, None => "null".into() };
+                    let arr = |v: &Vec<String>| format!("[{}]", v.iter().map(|n| quote(n)).collect::<Vec<_>>().join(", "));
+                    let first = lists.keys().next().cloned().unwrap_or_default();
+                    let mut code = arr(&lists[&first]);
+                    for (k, v) in lists.iter().filter(|(k, _)| **k != first) {
+                        code = format!("({which} == {} ? {} : {code})", quote(k), arr(v));
+                    }
+                    // (asked for none, the source's default: its common list)
+                    if let Some(common) = lists.get("common") { code = format!("({which} == null ? {} : {code})", arr(common)); }
+                    return Ok((code, Ty::Object));
+                }
+                // one of those classes made by the name the list gave: the object that class was
+                // written as, fired here as an enemy is (`spawnPokemon`)
+                (_, "spawnPokemon", [k, ..]) if c.contains("PeptideAPI") => {
+                    let (k, _) = self.expr(k)?;
+                    let names: Vec<String> = crate::api_mappings::REGISTERED_LISTS.iter()
+                        .flat_map(|(_, package, prop)| crate::shared_packages::registered_lists(package, prop).into_values().flatten())
+                        .collect();
+                    let mut cases = Vec::new();
+                    for n in &names {
+                        if let Ok(f) = self.fire(n, "self") { cases.push(format!("\t\tcase {}: o = {f}(0, 0);", quote(n))); }
+                    }
+                    if cases.is_empty() { return Err("spawns a class its package lists, none of which was written here".into()) }
+                    let name = "spawnListed".to_string();
+                    if !self.helpers.contains_key(&name) {
+                        self.helpers.insert(name.clone(), format!("// one of the classes a list the game hands out holds, made by its name: the object it was\n// written as, made as an enemy is\nfunction {name}(k) {{\n\tvar o = null;\n\tswitch (k) {{\n{}\n\t}}\n\tif (o != null) {{ o.exports.__isEnemy = true; o.exports.__np = true; }}\n\treturn o;\n}}", cases.join("\n")));
+                    }
+                    return Ok((format!("{name}({k})"), Ty::Object));
+                }
                 (_, "makeEnemy", [k]) if c.contains("PeptideAPI") && self.o.fighter => {
                     let n = match k { Expr::Str(n) => n.clone(), Expr::Name(n) => short(n).to_string(), _ => return Err("makes an enemy named as it runs".into()) };
                     let f = self.fire(&n, "self")?;
@@ -4944,6 +4991,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 if self.o.model.classes.values().any(|k| short(&k.name) == short(c)) {
                     let id = crate::projectile_gen::projectile_content_id(short(c));
                     return Ok((format!("{{ var firer = self.getRootOwner() != null ? self.getRootOwner() : self; var made = firer.getResource().getContent({}); made == null ? null : match.createProjectile(made, firer); }}", quote(&id)), Ty::Object));
+                }
+            }
+        }
+        // (an item another fighter-side object makes by its class, a pokemon's egg: the content
+        // that class shipped as, a custom game object of whoever owns the maker)
+        if m == "PeptideAPI.placePickup" && !self.o.stage && self.o.made_objects.is_empty() {
+            if let Some(Expr::Name(c) | Expr::Str(c)) = args.first() {
+                if self.o.model.classes.values().any(|k| short(&k.name) == short(c)) {
+                    let id = crate::projectile_gen::projectile_content_id(short(c));
+                    return Ok((format!("{{ var holder = self.getRootOwner() != null ? self.getRootOwner() : self; var made = holder.getResource().getContent({}); made == null ? null : match.createCustomGameObject(made, holder); }}", quote(&id)), Ty::Object));
                 }
             }
         }
@@ -6009,7 +6066,8 @@ self.playFrameLabel({})", quote(f))); }
                      ("XS", fold(&format!("{} * {speed}", number(xs)))), ("YS", fold(&format!("{} * {speed}", number(ys)))), ("SIZE", number(self.o.size)),
                      // (fired under a name its entity is not written from: it takes that one's declaration on)
                      // (nothing to take on drops the statement)
-                     ("DECLARES", declares.map(|r| format!("p.updateGameObjectStatsMetadata({r})")).unwrap_or_default())];
+                     // (an object whose stats declare no metadata has none to merge into: it is given its own)
+                     ("DECLARES", declares.map(|r| format!("if (p.getGameObjectStatsMetadata() == null) p.updateGameObjectStats({{ metadata: {r} }}); else p.updateGameObjectStatsMetadata({r})")).unwrap_or_default())];
         let def = helper(self.o.runtime, "helpers", if self.o.fighter { "fighter_fire" } else { "fire" }, &f, &words, &[])?;
         let def = def.lines().filter(|l| l.trim() != ";").collect::<Vec<_>>().join("\n");
         self.helpers.insert(f.clone(), def);

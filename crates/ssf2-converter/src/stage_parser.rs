@@ -273,6 +273,9 @@ pub struct Hazard {
     /// damaging animation as HIT_BOX layers, so the hit volume is the real SSF2 attackBox geometry
     /// (recovered like the lava's) instead of the art canvas or a guessed size.
     pub attack_boxes: Vec<Rect>,
+    /// The clip's `customBox` shapes, clip-local and FM-scaled: boxes its own class tests (`hitboxTest`),
+    /// written as the engine's custom box b on every animation, hitting nothing
+    pub custom_boxes: Vec<Rect>,
     /// The clip holds a body box (`hitBox`) of its own and so hurts no one by touch (see
     /// `body_only`)
     pub body_box: bool,
@@ -1379,7 +1382,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 damage: 0.0, knockback: 0.0, angle: 0.0,
                 interval: 0, active: 20, range: 0.0, period: 120, rehit: 30, kb_growth: 0.0,
                 label: site.inst_name.clone().unwrap_or_else(|| if site.class_api.is_empty() { format!("bounce{si}") } else { site.class_api.clone() }),
-                art: None, anims: vec![], attack_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![],
+                art: None, anims: vec![], attack_boxes: vec![], custom_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![],
                 faller: None, behavior: crate::abc_parser::EnemyBehavior::default(),
                 reconstructed_script: None, class_name: None, max_y_speed: None,
                 instance_name: site.inst_name.clone(), declared_kind: site.kind.clone(), art_clip: None, placements: Vec::new(),
@@ -1649,7 +1652,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                     if let Some(id) = find(&art.sym_names, &art.sprites) {
                         let a = extract_labeled_clip_anims(id, &art.sprites, &art.sym_names, &art.shape_defs, &art.bitmaps, &planes, &art.abcs, 0.0, 0.0, &[]);
                         if !a.is_empty() {
-                            log::info!("stage object '{}' draws '{}' out of shared package {k}", hz.label, &c[1]);
+                            log::info!("stage object '{}' draws '{}' out of shared package {k}", hz.label, c[1]);
                             fid = Some(id); anims = Some(a);
                             break;
                         }
@@ -1658,14 +1661,14 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             }
             match anims {
                 Some(a) if !a.is_empty() => {
-                    log::info!("stage object '{}' also draws '{}' in front of the fighters", hz.label, &c[1]);
+                    log::info!("stage object '{}' also draws '{}' in front of the fighters", hz.label, c[1]);
                     hz.fg_anims = a;
                 }
                 _ if fid.is_some() && Some(&want) == hz.linkage_id.as_ref().map(|s| s.to_ascii_lowercase()).as_ref() =>
                     log::info!("stage object '{}' draws its own art in front of the fighters", hz.label),
                 _ => log::info!("stage object '{}' draws in front of the fighters; the clip it \
                                  names ('{}') is not one this package holds on its own, so what \
-                                 moves forward is the object", hz.label, &c[1]),
+                                 moves forward is the object", hz.label, c[1]),
             }
             hz.draws_in_front = true;
         }
@@ -1787,6 +1790,10 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                         .into_iter()
                         .map(|r| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale })
                         .collect();
+                    hz.custom_boxes = clip_boxes(cid, &art.sprites, &art.sym_names, &art.shape_bounds, BoxRole::Custom)
+                        .into_iter()
+                        .map(|r| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale })
+                        .collect();
                     let anims = extract_labeled_clip_anims(cid, &art.sprites, &art.sym_names,
                         &art.shape_defs, &art.bitmaps, &planes, &art.abcs, 0.0, 0.0, &[]);
                     if !anims.is_empty() {
@@ -1862,6 +1869,9 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 // lava uses. The Thwomp's `fall` yields its left + right pair.
                 hz.body_box = body_only(cid, &sprites, &sym_names, &shape_bounds);
                 hz.attack_boxes = clip_attack_boxes(cid, &sprites, &sym_names, &shape_bounds).into_iter()
+                    .map(|r| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale })
+                    .collect();
+                hz.custom_boxes = clip_boxes(cid, &sprites, &sym_names, &shape_bounds, BoxRole::Custom).into_iter()
                     .map(|r| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale })
                     .collect();
                 // origin 0,0: the frames stay in the clip's LOCAL space, so the emitter centres them
@@ -2702,7 +2712,18 @@ fn clip_attack_boxes(
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
 ) -> Vec<Rect> {
-    clip_boxes(clip_id, sprites, sym_names, shape_bounds, true)
+    clip_boxes(clip_id, sprites, sym_names, shape_bounds, BoxRole::Attack)
+}
+
+/// What a box under a clip is for, by its name
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoxRole {
+    /// `hitBox…`: the body it is hit on
+    Body,
+    /// `attackBox`, or an unnamed collision clip: what hits
+    Attack,
+    /// `customBox…`: what its own class tests, which hits nothing
+    Custom,
 }
 
 /// Whether a clip holds a body box of its own (a child it names `hitBox`) and nothing that hits: the
@@ -2715,17 +2736,17 @@ fn body_only(
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
 ) -> bool {
-    !clip_boxes(clip_id, sprites, sym_names, shape_bounds, false).is_empty()
-        && clip_boxes(clip_id, sprites, sym_names, shape_bounds, true).is_empty()
+    !clip_boxes(clip_id, sprites, sym_names, shape_bounds, BoxRole::Body).is_empty()
+        && clip_boxes(clip_id, sprites, sym_names, shape_bounds, BoxRole::Attack).is_empty()
 }
 
-/// The boxes under a clip: the ones that hit (`attack`), else its body boxes (`hitBox…`).
+/// The boxes under a clip that play the role asked for.
 fn clip_boxes(
     clip_id: u16,
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
-    attack: bool,
+    attack: BoxRole,
 ) -> Vec<Rect> {
     #[allow(clippy::too_many_arguments)]
     fn walk(
@@ -2733,7 +2754,7 @@ fn clip_boxes(
         sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
         sym_names: &BTreeMap<u16, String>,
         shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
-        attack: bool,
+        attack: BoxRole,
         out: &mut Vec<Rect>,
     ) {
         if depth > 3 { return; }
@@ -2744,11 +2765,13 @@ fn clip_boxes(
                     let l = s.to_ascii_lowercase();
                     l.contains("collison") || l.contains("collision")
                 });
-                // a box's name is its role: `hitBox…` is the body the object is hit on; an
-                // `attackBox`, a `customBox` its class tests itself or an unnamed collision clip hits
+                // a box's name is its role: `hitBox…` is the body the object is hit on, a
+                // `customBox…` what its class tests itself, and an `attackBox` or an unnamed
+                // collision clip hits
                 let role = match name.as_deref() {
-                    Some(n) if n.starts_with("hitBox") => Some(false),
-                    _ if collision || name.as_deref() == Some("attackBox") => Some(true),
+                    Some(n) if n.starts_with("hitBox") => Some(BoxRole::Body),
+                    Some(n) if n.starts_with("customBox") => Some(BoxRole::Custom),
+                    _ if collision || name.as_deref() == Some("attackBox") => Some(BoxRole::Attack),
                     _ => None,
                 };
                 if role == Some(attack) {
@@ -2785,7 +2808,7 @@ fn clip_boxes(
     let boxes: Vec<Rect> = raw.into_iter()
         .filter(|r| seen.insert((r.x.round() as i64, r.y.round() as i64, r.w.round() as i64, r.h.round() as i64)))
         .collect();
-    if attack && std::env::var("PEPTIDE_BOX_DEBUG").is_ok() {
+    if attack == BoxRole::Attack && std::env::var("PEPTIDE_BOX_DEBUG").is_ok() {
         eprintln!("[boxes] clip={clip_id}: {}", boxes.iter().map(|r| format!("({:.0},{:.0} {:.0}x{:.0})", r.x, r.y, r.w, r.h)).collect::<Vec<_>>().join(" "));
     }
     boxes
@@ -3003,7 +3026,7 @@ fn object_from_declarations(
         interval: 0, active: 20,
         range: 0.0, period: 120, rehit: 30, kb_growth: 0.0,
         label: actor.class_name.clone(),
-        art: None, anims: vec![], attack_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![],
+        art: None, anims: vec![], attack_boxes: vec![], custom_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![],
         faller: None, behavior: crate::abc_parser::EnemyBehavior::default(),
         reconstructed_script: None, class_name: None, max_y_speed: None,
         instance_name: None, declared_kind: String::new(), art_clip: None, placements: Vec::new(),

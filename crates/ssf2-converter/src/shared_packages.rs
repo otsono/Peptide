@@ -208,3 +208,45 @@ pub fn music_package(id: &str) -> Option<(crate::ssf2_manifest::Entry, Vec<u8>)>
     let movie = crate::ssf::decompress(&raw).ok()?;
     Some((entry, movie))
 }
+
+/// The lists a package registers under a name of its own (`register("pokemon", { common: [...],
+/// rare: [...] })`), by list, each as the short names of the classes it holds. The package is the
+/// one the manifest files under `package`; a list the game hands out (`getPokemonStatsList`) is
+/// what that package registered, so the classes a call can pick are the ones written there.
+pub fn registered_lists(package: &str, prop: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    use crate::model::ast::{walk_exprs, Expr};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    static MEMO: OnceLock<Mutex<BTreeMap<(String, String), BTreeMap<String, Vec<String>>>>> = OnceLock::new();
+    let memo = MEMO.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let key = (package.to_string(), prop.to_string());
+    if let Some(v) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) { return v }
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let short = |n: &str| n.rsplit(['.', ':']).next().unwrap_or(n).to_string();
+    if let Some(pkg) = manifest_packages().iter().find(|p| p.id == package) {
+        if let Ok(model) = crate::model::SourceModel::read(&pkg.swf) {
+            for c in model.classes.values() {
+                let bodies = std::iter::once(&c.constructor.body).chain(c.methods.iter().map(|m| &m.function.body));
+                for body in bodies {
+                    walk_exprs(body, &mut |e| {
+                        let Expr::Call(g, a) = e else { return };
+                        if !matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if n == "register") { return }
+                        let [Expr::Str(name), Expr::Object(pairs)] = a.as_slice() else { return };
+                        if name != prop { return }
+                        for (k, v) in pairs {
+                            let (Expr::Str(k), Expr::Array(items)) = (k, v) else { continue };
+                            let names: Vec<String> = items.iter().filter_map(|x| match x {
+                                Expr::Name(n) => Some(short(n)),
+                                Expr::Member(_, n) => Some(n.clone()),
+                                _ => None,
+                            }).collect();
+                            out.entry(k.clone()).or_default().extend(names);
+                        }
+                    });
+                }
+            }
+        }
+    }
+    if let Ok(mut m) = memo.lock() { m.insert(key, out.clone()); }
+    out
+}

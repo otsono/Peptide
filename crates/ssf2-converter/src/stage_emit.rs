@@ -2888,7 +2888,8 @@ fn emit_multi_anim_hazard(
         hit_boxes.push((-hz.w / 2.0, -hz.h / 2.0, hz.w, hz.h));
     }
     let dual = hit_boxes.len() >= 2;
-    write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes, expects_to_be_hit(hz) || hz.body_box))?;
+    let custom: Vec<(f64, f64, f64, f64)> = hz.custom_boxes.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+    write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes, &custom, expects_to_be_hit(hz) || hz.body_box))?;
     write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
     // an object with a class of its own runs that class: its script is written from it
@@ -2948,7 +2949,7 @@ fn emit_multi_anim_hazard(
 fn expects_to_be_hit(hz: &Hazard) -> bool { crate::stage_text::listens_for_hits(hz) }
 
 fn hazard_entity_multi(hid: &str, anims: &[HzAnim], hit_boxes: &[(f64, f64, f64, f64)],
-                       hurtable: bool) -> Value {
+                       custom_boxes: &[(f64, f64, f64, f64)], hurtable: bool) -> Value {
     let g = |s: &str| det_uuid(&format!("hazard::{hid}::{s}"));
     let mut symbols = Vec::new();
     let mut keyframes = Vec::new();
@@ -3001,6 +3002,20 @@ fn hazard_entity_multi(hid: &str, anims: &[HzAnim], hit_boxes: &[(f64, f64, f64,
             let layer = g(&format!("hurtlayer{ai}"));
             layers.push(json!({ "$id": layer, "name": "hurtbox", "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0x00ff00", "keyframes": [kf],
                 "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "HURT_BOX", "index": 0 } } }));
+            anim_layers.push(layer);
+        }
+        // the boxes its own class tests (`customBox`), on every animation: custom box b, which
+        // hits nothing and is read only by its tests (`hitboxTest`)
+        for (bi, (bx, by, bw, bh)) in custom_boxes.iter().enumerate() {
+            let span = a.frame_guids.len().max(1) as u64;
+            let (hw, hh) = (bw / 2.0, bh / 2.0);
+            let sym = g(&format!("customsym{ai}_{bi}"));
+            symbols.push(json!({ "$id": sym, "type": "COLLISION_BOX", "x": bx, "y": by, "pivotX": hw, "pivotY": hh, "scaleX": bw, "scaleY": bh, "rotation": 0.0, "alpha": 0.5, "color": "0xd1d1d1", "pluginMetadata": {} }));
+            let kf = g(&format!("customkf{ai}_{bi}"));
+            keyframes.push(json!({ "$id": kf, "symbol": sym, "length": span, "tweened": false, "tweenType": "LINEAR", "type": "COLLISION_BOX", "pluginMetadata": {} }));
+            let layer = g(&format!("customlayer{ai}_{bi}"));
+            layers.push(json!({ "$id": layer, "name": format!("customboxb{bi}"), "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0xd1d1d1", "keyframes": [kf],
+                "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "CUSTOM_BOX_B", "index": bi } } }));
             anim_layers.push(layer);
         }
         animations.push(json!({ "$id": g(&format!("anim{ai}")), "name": a.name.clone(), "layers": anim_layers, "pluginMetadata": {} }));
@@ -5517,7 +5532,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20,
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None, instance_name: None, declared_kind: String::new(), art_clip: None,
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], custom_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None, instance_name: None, declared_kind: String::new(), art_clip: None,
             external_pkg: None, linkage_id: None, fg_anims: vec![], draws_in_front: false,
             platform_shapes: vec![], body_faces: vec![], child_rects: vec![], placements: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, parked: false, placed_clip: None,
         }

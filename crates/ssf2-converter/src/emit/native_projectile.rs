@@ -212,7 +212,15 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
         let (decl, own) = match decls.projectiles.get(name) {
             Some(d) => (d.clone(), false),
-            None => (own_fired.iter().find(|(n, _)| n == name)?.1.clone(), true),
+            None => match own_fired.iter().find(|(n, _)| n == name) {
+                Some((_, d)) => (d.clone(), true),
+                // (one made by a class nothing declares, an enemy a list hands out: the entity
+                // this project wrote for that class's clip, as it stands)
+                None => {
+                    let key = entity_for(name, &Value::Null)?;
+                    return Some((crate::projectile_gen::projectile_content_id(&key), [0.0; 4], None));
+                }
+            },
         };
         let key = entity_for(name, &decl)?;
         let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
@@ -245,7 +253,10 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // (an item that declares no lifetime lasts until its own code ends it: a bob-omb walks, counts
     // down and explodes)
     let declared_life = spec.stats.get("time_max").and_then(|v| match v { Value::Num(n) => Some(*n), _ => None });
-    let life = declared_life.unwrap_or(if item { -0.5 } else { 60.0 });
+    // (and so does an enemy, an object of a class extending the API's enemy: a pokemon stays out
+    // until its own code sends it away)
+    let enemy = found.is_some_and(|c| class_chain(model, c).iter().any(|s| s == "PeptideEnemy"));
+    let life = declared_life.unwrap_or(if item || enemy { -0.5 } else { 60.0 });
     let start = start_animation(char_dir, entity_key).or_else(|| pieces.first().map(|p| p.fm_name.clone())).unwrap_or_default();
     let first = pieces.iter().find(|p| p.fm_name == start && p.from == 1).and_then(|p| written.frames.get(&(p.sym, 1)));
     let reversible = !matches!(spec.stats.get("canBeReversed"), Some(Value::Bool(false)));

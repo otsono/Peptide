@@ -1636,6 +1636,10 @@ fn build_sound_call(id: Option<&str>) -> String {
 /// Every projectile name the source fires by, in the order it fires them. What a fighter
 /// spawns is stated in its own code, so this is what "the projectiles this character needs"
 /// means -- not what its file happens to carry.
+/// The API's calls that hand out a list a package registers, as (call, the package's manifest id,
+/// the name it registers the list under)
+pub const REGISTERED_LISTS: [(&str, &str, &str); 1] = [("getPokemonStatsList", "pokemon", "pokemon")];
+
 pub fn projectile_names_fired_in(code: &str) -> Vec<String> {
     // every spelling the source spawns by, since a fighter picks one and a copy ability picks
     // another, and a name that only one of them recognises is a move that fires nothing.
@@ -1666,6 +1670,14 @@ pub fn projectile_names_fired_in(code: &str) -> Vec<String> {
         for c in crate::re!(r#"(?:\.push\(|[\[,]\s*|=\s*)"([A-Za-z_][\w]*)""#).captures_iter(code) {
             let name = c[1].to_string();
             if !out.contains(&name) { out.push(name); }
+        }
+    }
+    // ...and the classes a list the game hands out can hold (`getPokemonStatsList`): each one the
+    // package that list comes from registers in it, any of which the code may go on to spawn
+    for (call, package, prop) in REGISTERED_LISTS {
+        if !code.contains(&format!("{call}(")) { continue }
+        for names in crate::shared_packages::registered_lists(package, prop).into_values() {
+            for name in names { if !out.contains(&name) { out.push(name); } }
         }
     }
     for by_class in ["spawnEnemy(", "spawnItem("] {

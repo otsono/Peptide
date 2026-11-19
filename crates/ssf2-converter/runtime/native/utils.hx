@@ -1105,12 +1105,14 @@ function camPointGone(c, p) {
 }
 
 // ---- deathSwitch
-// the death bounds' switches its code flips (`enableFallDeath`), kept and read back as it set them;
-// this engine's bounds stay as they are
+// the death bounds' switches its code flips (`enableFallDeath`): the blast zone on that side (the
+// bottom for falls, the top for the ceiling) KOs no one while off, and they are kept to read back
 var deathOff = self.makeObject(null);
 function deathSwitch(k, on) {
 	if (deathOff.get() == null) deathOff.set(new haxe.ds.StringMap());
 	deathOff.get().set(k, on != true);
+	var t = on == true ? BlastZoneType.ALWAYS_KO : BlastZoneType.DISABLED;
+	if (stage != null) stage.updateStageStats(k == "fall" ? { bottomBlastZoneType: t } : { topBlastZoneType: t });
 }
 function deathOn(k) { return deathOff.get() == null || deathOff.get().get(k) != true; }
 
@@ -1264,4 +1266,149 @@ function floorAttach(o) {
 	if (hits == null || hits.length == 0) return;
 	o.setY(out.y);
 	o.attachToFloor(hits[0]);
+}
+
+// ---- hurtInterrupt
+// the check an object's code makes of each hit about to land on it (`setHurtInterrupt`): handed
+// the one hitting it, as `target`, and a hit it answers true is not landed; null takes the check
+// away. the hit is turned away where it is dealt, so every object in the match that can hit is
+// listened to as it comes in
+function hurtInterrupt(o, f) {
+	if (o == null) return;
+	o.exports.__hurtCheck = f;
+	if (o.exports.__hurtHeard == true) return;
+	o.exports.__hurtHeard = true;
+	var watch = function() {
+		var all = [];
+		for (c in match.getCharacters()) all.push(c);
+		for (p in match.getProjectiles()) all.push(p);
+		for (g in match.getCustomGameObjects()) all.push(g);
+		for (a in all) {
+			if (a == o || a.exports == null || a.exports.__hurtWatched == true) continue;
+			a.exports.__hurtWatched = true;
+			var by = a;
+			by.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(e) {
+				var foe = e.data.foe;
+				if (foe == null || foe.exports == null) return;
+				var check = foe.exports.__hurtCheck;
+				if (check != null && check({ target: by, attackBoxData: e.data.hitboxStats, collisionRect: null }) == true) e.data.hitboxStats.disabled = true;
+			}, { persistent: true });
+		}
+	};
+	watch();
+	o.addTimer(1, -1, watch, { persistent: true });
+}
+
+// ---- stageFocus
+// the camera frames the whole stage for `n` of the source's frames, its fighters not followed
+// (`CameraMode.STAGE`), then follows them again; a call while it does starts the count over, and
+// 0 ends it now. the count is kept on the stage, which outlives whoever asked
+function stageFocus(n) {
+	var c = match.getCamera();
+	if (c == null || stage == null) return null;
+	var left = n == null ? 0 : Std.int(n * 2);
+	if (left > 0 && c.getMode() != CameraMode.STAGE) c.setMode(CameraMode.STAGE);
+	stage.exports.__focusLeft = left;
+	if (left <= 0) { if (c.getMode() == CameraMode.STAGE) c.setMode(CameraMode.NORMAL); return null; }
+	if (stage.exports.__focusTimed == true) return null;
+	stage.exports.__focusTimed = true;
+	stage.addTimer(1, -1, function() {
+		var k = stage.exports.__focusLeft;
+		if (k == null || k <= 0) return;
+		k = k - 1;
+		stage.exports.__focusLeft = k;
+		if (k <= 0 && match.getCamera().getMode() == CameraMode.STAGE) match.getCamera().setMode(CameraMode.NORMAL);
+	}, { persistent: true });
+	return null;
+}
+
+// ---- boxesMeet
+// where one object's boxes of a kind meet another's (`hitboxTest`), the kinds by the source's
+// numbering: its attack box is this engine's hit box, its hit box this engine's hurt box, and its
+// custom box the custom box b it is written as; a kind with no box here meets nothing
+function boxesMeet(a, ka, b, kb) {
+	if (a == null || b == null || a.isDisposed() || b.isDisposed()) return [];
+	var ta = boxKind(ka);
+	var tb = boxKind(kb);
+	if (ta == null || tb == null) return [];
+	var r = a.hitTestEntity(b, ta, tb);
+	return r == null ? [] : r;
+}
+
+function boxKind(k) {
+	switch (k) {
+		case 0: return CollisionBoxType.HIT;
+		case 1: return CollisionBoxType.HURT;
+		case 2: return CollisionBoxType.GRAB;
+		case 3: return CollisionBoxType.GRABHOLD;
+		case 6: return CollisionBoxType.ABSORB;
+		case 7: return CollisionBoxType.COUNTER;
+		case 10: return CollisionBoxType.REFLECT;
+		case 12: return CollisionBoxType.LEDGEGRAB;
+		case 22: return CollisionBoxType.CUSTOMB;
+	}
+	return null;
+}
+
+// ---- pickUpNear
+// an item lying free within a fighter's reach taken up by its own code (`pickupItem`), as a
+// press of attack would take it: whether one was
+function pickUpNear(c) {
+	if (c == null) return false;
+	for (o in match.getCustomGameObjects()) {
+		if (o.isDisposed() || o.exports == null || o.exports.__takeBy == null) continue;
+		if (o.exports.__takeBy(c) == true) return true;
+	}
+	return false;
+}
+
+// ---- unseenFor
+// a fighter not drawn for `n` of the source's frames (`setInvisibilityTimer`), then drawn again
+function unseenFor(c, n) {
+	if (c == null || c.isDisposed()) return null;
+	c.setVisible(false);
+	var k = n == null ? 0 : Std.int(n * 2);
+	if (k <= 0) { c.setVisible(true); return null; }
+	c.addTimer(k, 1, function() { if (!c.isDisposed()) c.setVisible(true); }, { persistent: true });
+	return null;
+}
+
+// ---- paletteOn
+// an object or a clip drawn in other colours by its code (`setPaletteSwapData`, `replacePalette`):
+// each colour the swap lists (`colors`) drawn as its replacement, by the engine's palette shader;
+// the swap it was given before is taken off, and a clip this engine does not draw is left be
+var paletteShaders = self.makeObject(null);
+function paletteOn(o, pal) {
+	if (o == null || o.addShader == null || o.isDisposed()) return;
+	if (paletteShaders.get() == null) paletteShaders.set(new haxe.ds.StringMap());
+	var key = Std.string(o.getUid());
+	var was = paletteShaders.get().get(key);
+	if (was != null) o.removeShader(was);
+	var from = pal == null ? null : pal.colors;
+	var to = pal == null ? null : pal.replacements;
+	if (from == null || to == null) { paletteShaders.get().remove(key); return; }
+	var m = [0 => 0];
+	m.remove(0);
+	var any = false;
+	for (i in 0...from.length) {
+		if (i >= to.length || from[i] == to[i]) continue;
+		m.set(argb(from[i]), argb(to[i]));
+		any = true;
+	}
+	if (!any) { paletteShaders.get().remove(key); return; }
+	var sh = PaletteSwapShader.create(m);
+	o.addShader(sh);
+	paletteShaders.get().set(key, sh);
+}
+// (a costume's record, as `setPaletteSwapData` is handed one: its swap is its `paletteSwap`)
+function paletteDataOn(o, d) {
+	paletteOn(o, d == null ? null : d.paletteSwap);
+}
+// a colour as the shader keys it, opaque where the source gives no alpha
+// (worked in floats: a colour above the int range would not survive Std.int)
+function argb(c) {
+	var f = c * 1.0;
+	if (f >= 0 && f < 16777216.0) f = f + 4278190080.0;
+	if (f > 2147483647.0) f = f - 4294967296.0;
+	return Std.int(f);
 }
