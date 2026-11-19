@@ -931,7 +931,8 @@ fn process_character(
             for child in image_extractor::named_descendants_of_sprite(parsed_swf, *sid) {
                 if taken.contains(&child.name) && filled(&child.name) { continue }
                 // reached as the fighter's own field, or as the stance clip's (`getStanceMC().waftloc`)
-                let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){}\b", regex::escape(&child.name)));
+                // or turned by its name inside a clip the stance places (`stance.aura1.cspark.gotoAndStop(n)`)
+                let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){0}\b|\.{0}\.(?:gotoAndStop|gotoAndPlay|play|stop|nextFrame|prevFrame)\(", regex::escape(&child.name)));
                 if !re.is_match(&code) { continue }
                 if out.iter().any(|(n, a, _)| *n == child.name && *a == fm) { continue }
                 out.push((child.name.clone(), fm.clone(), child));

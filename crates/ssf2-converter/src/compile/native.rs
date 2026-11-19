@@ -1029,6 +1029,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 clip_record_of(self.o.model, sym, "me", 0, &mut kids);
                 setup.extend(kids.into_iter().map(|l| format!("\t{l}")));
                 setup.extend(start.iter().map(|kv| { let (f, d) = kv.split_once(": ").unwrap_or((kv, "null")); format!("\tme.{f} = {d};") }));
+                // (a clip that is one of its effects: drawn as that effect wherever its code puts it, `screenClip`)
+                let mut ps: Vec<(String, u32, u32)> = self.o.effect_pieces.iter().filter(|p| p.0 == short(&k.name)).map(|p| (p.1.clone(), p.2, p.3)).collect();
+                if !ps.is_empty() {
+                    ps.sort_by_key(|p| p.1);
+                    self.util("screenClip")?;
+                    setup.push(format!("\tme.id = {};", quote(short(&k.name))));
+                    setup.push(format!("\tme.anims = [{}];", ps.iter().map(|(a, f, l)| format!("[{}, {}, {}]", quote(a), f.max(&1), l)).collect::<Vec<_>>().join(", ")));
+                }
                 setup.push(format!("\tclipRun(me, {total}, [{}], {kid}_frames);", labels.join(", ")));
                 if let Some(open) = lines.iter().position(|l| l.trim_end().ends_with('{')) { for (i, l) in setup.into_iter().enumerate() { lines.insert(open + 1 + i, l); } }
                 self.util("clipRecord")?;
@@ -2251,8 +2259,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
                 if who == "self" { return Err(format!("writes {f} on itself")) }
                 let (val, _) = self.expr(v)?;
-                // (through what that object publishes of the fields others' code writes on it)
-                Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))])
+                // (through what that object publishes of the fields others' code writes on it; a
+                // record of its own, a clip its code made, is written as it is)
+                let set = self.owner_field("set")?;
+                Ok(vec![format!("if ({who} != null && {who}.isDisposed == null) {who}.{} = {val}; else {set}({who}, \"self\", {}, {val});", ident(f), quote(f))])
             }
             Place::Temp(t) => {
                 let (val, ty) = self.expr(v)?;
@@ -4616,6 +4626,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         // part of the fighter's art this engine draws with it
         if m == "removeChild" && self.o.fighter {
             if let [x] = args {
+                // (a clip record of its own taking itself off what it was put in: taken off there, `clipRemove`)
+                if matches!(x, Expr::This) && self.record.as_ref().is_some_and(|k| self.clip_recs.contains(k)) {
+                    self.util("clipAdd")?;
+                    return Ok(("if (me.parentOf != null) clipRemove(me.parentOf(), me)".into(), Ty::Any));
+                }
                 if matches!(x, Expr::This) || self.is_clip(x) { return Ok(("// (not ported: a part of its clip takes itself off; this engine draws it with the rest)".into(), Ty::Any)) }
                 let (v, _) = self.expr(x)?;
                 return Ok((format!("if ({v} != null && !{v}.isDisposed()) {v}.kill()"), Ty::Any));
@@ -6678,9 +6693,13 @@ self.playFrameLabel({})", quote(f))); }
         if !self.o.fighter { return None }
         let Expr::Member(t, name) = e else { return None };
         if !self.o.parts.iter().any(|p| &p.name == name) { return None }
-        let mine = matches!(&**t, Expr::This) || self.is_clip(t)
-            || matches!(&**t, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip") && self.expr(o).is_ok_and(|(w, _)| w == "self")));
-        mine.then(|| name.clone())
+        let root = |w: &mut Self, t: &Expr| matches!(t, Expr::This) || w.is_clip(t)
+            || matches!(t, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip") && w.expr(o).is_ok_and(|(x, _)| x == "self")));
+        // (or inside a clip its own clip places, by the names its clips place it under:
+        // `stance.aura1.cspark`, the part drawn apart with its place composed down to it)
+        let mut at: &Expr = t;
+        while let Expr::Member(o, _) = at { if root(self, at) { break } at = o; }
+        root(self, at).then(|| name.clone())
     }
 
     fn own_child(&self, e: &Expr) -> Option<String> {
