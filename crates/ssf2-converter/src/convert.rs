@@ -1010,7 +1010,15 @@ fn process_character(
     // THE CLIPS AN EFFECT PLACES THAT ITS HOLDER'S CODE TURNS (`fruitMC.chargingFruit.gotoAndStop(n)`):
     // drawn apart from the effect's art, each a vfx of its own riding it, so the code can pick its frame
     {
-        let code: String = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect::<Vec<_>>().join("\n");
+        // (the fighter's scripts, and the code of its package's own classes: a clip class its code
+        // makes turns its own children, `self.peachbordl.gotoAndStop(n)`)
+        let mut code: String = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect::<Vec<_>>().join("\n");
+        for abc in crate::projectile_gen::parse_abcs(parsed_swf) {
+            for c in &abc.classes {
+                if !effects.iter().any(|e| e.name.eq_ignore_ascii_case(crate::compile::short(&c.name))) { continue }
+                for m in abc_parser::extract_class_methods(&abc, &c.name).values() { code.push('\n'); code.push_str(m); }
+            }
+        }
         for e in effects.iter_mut() {
             for child in image_extractor::named_children_of_sprite(parsed_swf, e.sprite_id) {
                 let (name, sid) = (child.name, child.sprite_id);

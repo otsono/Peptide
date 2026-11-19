@@ -1028,7 +1028,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let mut kids = Vec::new();
                 clip_record_of(self.o.model, sym, "me", 0, &mut kids);
                 setup.extend(kids.into_iter().map(|l| format!("\t{l}")));
-                setup.extend(start.iter().map(|kv| { let (f, d) = kv.split_once(": ").unwrap_or((kv, "null")); format!("\tme.{f} = {d};") }));
+                // (a field that names a clip its clip places is that clip, made above: not set back to nothing)
+                let fields_set: Vec<String> = start.iter().filter(|kv| { let f = kv.split_once(": ").map(|x| x.0).unwrap_or(kv); !setup_has_kid(&setup, f) }).map(|kv| { let (f, d) = kv.split_once(": ").unwrap_or((kv, "null")); format!("\tme.{f} = {d};") }).collect();
+                setup.extend(fields_set);
                 // (a clip that is one of its effects: drawn as that effect wherever its code puts it, `screenClip`)
                 let mut ps: Vec<(String, u32, u32)> = self.o.effect_pieces.iter().filter(|p| p.0 == short(&k.name)).map(|p| (p.1.clone(), p.2, p.3)).collect();
                 if !ps.is_empty() {
@@ -1036,6 +1038,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.util("screenClip")?;
                     setup.push(format!("\tme.id = {};", quote(short(&k.name))));
                     setup.push(format!("\tme.anims = [{}];", ps.iter().map(|(a, f, l)| format!("[{}, {}, {}]", quote(a), f.max(&1), l)).collect::<Vec<_>>().join(", ")));
+                    // (the clips it places that its code turns, drawn apart from its art: each the
+                    // effect's own animation of it, where the clip places it, with a timeline of its own)
+                    for ic in self.o.effect_inners.get(short(&k.name)).cloned().unwrap_or_default() {
+                        if !setup_has_kid(&setup, &ic.name) { continue }
+                        let Some((_, m)) = ic.placed.first() else { continue };
+                        let at = format!("me.{}", ic.name);
+                        setup.push(format!("\t{at}.id = {}; {at}.anims = [[{}, 1, {}]]; {at}.x = {}; {at}.y = {}; {at}.scaleX = {}; {at}.scaleY = {}; {at}.parentOf = function() {{ return me; }}; clipRun({at}, {}, [], null);",
+                            quote(short(&k.name)), quote(&ic.art), ic.frames.max(1), number(m.tx), number(m.ty), number(m.sx), number(m.sy), ic.frames.max(1)));
+                    }
                 }
                 setup.push(format!("\tclipRun(me, {total}, [{}], {kid}_frames);", labels.join(", ")));
                 if let Some(open) = lines.iter().position(|l| l.trim_end().ends_with('{')) { for (i, l) in setup.into_iter().enumerate() { lines.insert(open + 1 + i, l); } }
@@ -1815,6 +1826,23 @@ impl<'o, 'a> Writer<'o, 'a> {
                             }
                             _ => Err(format!("calls {m} on its {name} part")),
                         };
+                    }
+                    // (a clip a clip record of its own places that is drawn apart, as the effect the
+                    // record is drawn as carries it: its own timeline, `screenClip`)
+                    if let Expr::Member(t, n) = &**c {
+                        let drawn_apart = matches!(**t, Expr::This) && self.record.as_ref().is_some_and(|k| self.clip_recs.contains(k)
+                            && self.o.effect_inners.get(short(k)).is_some_and(|ics| ics.iter().any(|ic| &ic.name == n)));
+                        if drawn_apart {
+                            let Expr::Call(_, args) = e else { unreachable!() };
+                            self.util("clipRun")?;
+                            let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
+                            let r = format!("me.{n}");
+                            return Ok(match (m.as_str(), args.first()) {
+                                ("gotoAndStop" | "gotoAndPlay", Some(a)) => { let (a, _) = self.expr(a)?; format!("clipGo({r}, {a}, {hold});") }
+                                ("nextFrame" | "prevFrame", _) => format!("clipStep({r}, {});", if m == "nextFrame" { 1 } else { -1 }),
+                                _ => format!("clipPlay({r}, {});", !hold),
+                            });
+                        }
                     }
                     // (or a clip inside one, whose art is drawn into the fighter's with it)
                     let mut at: &Expr = c;
@@ -6680,7 +6708,9 @@ self.playFrameLabel({})", quote(f))); }
     fn costume_palette(&mut self) -> Result<String, String> {
         if !self.helpers.contains_key("costumePalette") {
             let Some((colors, maps)) = self.o.palette.clone() else { return Err("reads its costumes' colours, which this conversion has none of".into()) };
-            let hex = |v: &[u32]| v.iter().map(|c| format!("0x{c:08X}")).collect::<Vec<_>>().join(", ");
+            // (as the source's numbers are: unsigned, so a colour its code compares with one it
+            // writes out matches; a hex literal here is a 32-bit int, negative past 0x7FFFFFFF)
+            let hex = |v: &[u32]| v.iter().map(|c| if *c > 0x7FFF_FFFF { format!("{c}.0") } else { format!("0x{c:08X}") }).collect::<Vec<_>>().join(", ");
             let lines = vec![format!("var colors = [{}];", hex(&colors)), "var costumes = [".to_string()]
                 .into_iter().chain(maps.iter().map(|m| format!("\t[{}],", hex(m)))).chain(["];".to_string()]).collect::<Vec<_>>();
             self.helpers.insert("costumePalette".into(), helper(self.o.runtime, "helpers", "costume_palette", "costumePalette", &[], &lines)?);
@@ -7315,6 +7345,11 @@ fn record(arg: &str, field: &str) -> Result<Option<(String, Ty)>, String> {
     if let Some((code, is)) = t.record.get(field) { return Ok(Some((code.replace("{arg}", arg), Ty::named(is)))) }
     if t.unrecorded.iter().any(|f| f == field) { return Err(format!("reads the {field} of the event it is handed")) }
     Ok(None)
+}
+
+/// whether a record's setup makes a clip record for a clip its clip places under this name
+fn setup_has_kid(setup: &[String], name: &str) -> bool {
+    setup.iter().any(|l| l.contains(&format!("me.{name} = clipRecord(")))
 }
 
 /// the call that makes (or finds) one of an object's parts, `projPart`
