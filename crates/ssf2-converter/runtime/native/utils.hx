@@ -1412,3 +1412,50 @@ function argb(c) {
 	if (f > 2147483647.0) f = f - 4294967296.0;
 	return Std.int(f);
 }
+
+// ---- fsCutscene
+// a final smash cutscene (`triggerFSCutscene`): its clip, an object of the fighter's, holds itself
+// over the screen at its bottom centre (`__screenPinned`, its own update) until it ends itself or is
+// ended. which one plays is kept on the fighter, so any of its objects can start it, ask after it or
+// end it
+function fsFighter() { var o = self.getRootOwner(); return o != null ? o : self; }
+function fsCutsceneStart(e) {
+	if (e == null) return;
+	// (it plays until its own code ends it, not for an object's usual life)
+	if (e.exports != null && e.exports.__keepAlive != null) e.exports.__keepAlive();
+	if (e.exports != null) e.exports.__screenPinned = true;
+	fsFighter().exports.__fsClip = e;
+}
+function fsCutscenePlaying() {
+	var e = fsFighter().exports.__fsClip;
+	return e != null && !e.isDisposed();
+}
+function fsCutsceneEnd() {
+	var e = fsFighter().exports.__fsClip;
+	if (e != null && !e.isDisposed()) e.kill();
+	fsFighter().exports.__fsClip = null;
+}
+
+// ---- pinToScreen
+// held over the screen at its bottom centre, a source pixel to a screen pixel whatever the
+// camera's zoom, once its maker asks (`__screenPinned`: a final smash cutscene); where its own code
+// moved it since it was last held there stays (its shake)
+var pinX = self.makeObject(null);
+var pinY = self.makeObject(null);
+var offX = self.makeFloat(0);
+var offY = self.makeFloat(0);
+function pinToScreen() {
+	if (self.exports.__screenPinned != true) return;
+	var c = match.getCamera();
+	var z = c.getZoomScaleX();
+	if (z == null || z <= 0) z = 1;
+	self.setXSpeed(0);
+	self.setYSpeed(0);
+	if (pinX.get() != null) { offX.set(offX.get() + (self.getX() - pinX.get())); offY.set(offY.get() + (self.getY() - pinY.get())); }
+	pinX.set(c.getX() + offX.get() / z);
+	pinY.set(c.getY() + c.getViewportHeight() / 2 / z + offY.get() / z);
+	self.setX(pinX.get());
+	self.setY(pinY.get());
+	self.setScaleX(1 / (z * SIZE));
+	self.setScaleY(1 / (z * SIZE));
+}

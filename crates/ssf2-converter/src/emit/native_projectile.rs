@@ -266,6 +266,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     }
     // its floor listeners, told of the floor the source's way
     let mut update: Vec<String> = Vec::new();
+    // (one its maker holds over the screen, a final smash cutscene: held there each frame)
+    if crate::emit::is_screen_object(entity_key) {
+        functions.push(native::helper(runtime, "utils", "pinToScreen", "pinToScreen", &[("SIZE", num(units.size))], &[])?);
+        update.push("pinToScreen();".into());
+    }
     if !written.floor.is_empty() {
         let told: Vec<String> = written.floor.iter().map(|(listening, h)| if written.floor_speed {
             format!("if ({listening}.get()) onFloor({h});") } else { format!("if ({listening}.get()) {h}(null);") }).collect();

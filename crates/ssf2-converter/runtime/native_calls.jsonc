@@ -204,7 +204,7 @@
   // its palette, as the runtime answers it: none set here
   "paletteData": { "code": "{ paletteSwap: { colors: [], replacements: [] }, paletteSwapPA: { colors: [], replacements: [] } }", "returns": "record" },
   // an object it made takes its colours (an effect has none to take, as on the runtime)
-  "applyPalette": "if ({0} != null && {0}.getType() == EntityType.PROJECTILE) {0}.setCostumeIndex({self}.getCostumeIndex())",
+  "applyPalette": "if ({0} != null && {0}.getType != null && {0}.getType() == EntityType.PROJECTILE) {0}.setCostumeIndex({self}.getCostumeIndex())",
   // an item's own calls, on its handler (`runtime/native/item.hx`)
   "setFrameInterrupt": "frameInterrupt.set({0})",
   "isZDropped": { "code": "zDropped.get()", "returns": "bool" },
@@ -297,7 +297,8 @@
   // the clip of the hat a copied power gives: the engine draws none here, and its colours change nothing
   "copyHatClip": { "code": "null", "returns": "object", "gap": "the hat a copied power gives (getKirbyHatMC)" },
   // another engine object worn in its costume (an effect keeps its own colours, as on the runtime)
-  "applyPaletteToEffect": "if ({0} != null && {0} != {self} && {0}.getType() != EntityType.VFX) {0}.setCostumeIndex({self}.getCostumeIndex())",
+  // (a clip this engine draws into its holder's art is a record, with no costume of its own)
+  "applyPaletteToEffect": "if ({0} != null && {0} != {self} && {0}.getType != null && {0}.getType() != EntityType.VFX) {0}.setCostumeIndex({self}.getCostumeIndex())",
   // a clip recoloured by its code: each colour the swap lists drawn as its replacement
   "PeptideUtils.replacePalette": { "code": "paletteOn({0}, {1})", "helper": "paletteOn" },
   // the game's quality settings: every one on, as both engines run here
@@ -475,7 +476,7 @@
   "setForeground": "if ({self}.getViewRootContainer != null) stage.getForegroundStructuresContainer().addChild({self}.getViewRootContainer())",
   // the final smash being used, and the cut-in it plays: none here, as on the runtime
   "PeptideAPI.currentActiveFinalSmash": { "code": "null", "returns": "object" },
-  "PeptideAPI.isFSCutscenePlaying": { "code": "false", "returns": "bool" },
+  "PeptideAPI.isFSCutscenePlaying": { "code": "fsCutscenePlaying()", "helper": "fsCutscene", "returns": "bool" },
   "isUsingFinalSmash": { "code": "false", "returns": "bool" },
   // the clip a stage's weather is put in (its fields drawn over the view: `stage_boot.hx` weather)
   "getWeatherMC": { "code": "weatherRoot", "returns": "record" },
@@ -624,7 +625,8 @@
   // not followed (`CameraMode.STAGE`), then going back to them
   "setStageFocus": {"code": "stageFocus({0})", "helper": "stageFocus", "returns": "object"},
   "setTeamID": {"code": "null", "returns": "object", "gap": "setTeamID: changing a fighter's team"},
-  "startFinalCutscene": {"code": "null", "returns": "object", "gap": "startFinalCutscene: a final smash cutscene"},
+  // (a final smash cutscene another object asks of a fighter: the fighter's own, which its code plays)
+  "startFinalCutscene": {"code": "null", "returns": "object", "gap": "startFinalCutscene: a final smash cutscene asked of another fighter"},
   "swapFighter": {"code": "null", "returns": "object", "gap": "swapFighter: turning into another fighter"},
   "throbDamage": "null",
   "toFinalForm": {"code": "null", "returns": "object", "gap": "toFinalForm: a final form"},

@@ -349,8 +349,15 @@ fn reached(o: &Object, c: &ClassModel, m: &crate::model::MethodModel) -> bool {
     names.get(&m.name).is_some_and(|n| *n > 0)
 }
 
+thread_local! {
+    /// whether the object being written is a fighter (a clip's `getCharacter(this)` is then the
+    /// fighter itself; in another object's clip it is the fighter that made the object)
+    static WRITING_FIGHTER: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
 /// Write the object's classes as Fraymakers code, or say why they cannot be.
 pub fn write(o: &Object) -> Result<Written, String> {
+    WRITING_FIGHTER.with(|c| c.set(o.fighter || o.stage));
     let mut w = Writer::new(o)?;
     w.learn_fields();
     if o.power_record {
@@ -944,7 +951,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             walk(&m.function.body, &mut |s| if let Stmt::Assign(Place::Member(t, f), v) = s {
                 if matches!(t, Expr::This) && f == field {
                     any = true;
-                    all &= matches!(v, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, n) if n == "getOwner" && me(o)));
+                    all &= matches!(v, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, n) if n == "getOwner" && me(o)))
+                        // (in another object's clip, the fighter it belongs to: `getCharacter(this)`)
+                        || (!self.o.fighter && !self.o.stage && matches!(v, Expr::Call(g, a) if matches!(a.as_slice(), [Expr::This]) && matches!(&**g, Expr::Member(c, n) if n == "getCharacter" && matches!(&**c, Expr::Name(k) if k.contains("PeptideAPI")))));
                 }
             });
         }
@@ -1758,6 +1767,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
             }
         }
+        // the clip that is an object's whole art taking itself off its parent: the object ends
+        if let Expr::Call(f, a) = e {
+            if matches!(&**f, Expr::Member(_, rc) if rc == "removeChild") && matches!(a.as_slice(), [Expr::This]) && self.is_root_clip() {
+                return Ok("self.kill();".into());
+            }
+        }
         // a clip of the planes taking itself off its parent: no longer drawn
         if let Expr::Call(f, a) = e {
             if matches!(&**f, Expr::Member(_, rc) if rc == "removeChild") && matches!(a.as_slice(), [Expr::This]) && self.o.clip_parts.contains_key(&self.class) {
@@ -1884,6 +1899,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = if f == "visible" { (self.test(v)?, Ty::Bool) } else { self.expr(v)? };
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
                 return Ok(vec![format!("self.{set}({val});")]);
+            }
+        }
+        // (the place of the clip that is a projectile's or item's whole art, written in that clip's
+        // own code: the object's, as this engine draws the clip as the object)
+        if let Place::Member(Expr::This, f) = p {
+            if matches!(f.as_str(), "x" | "y") && self.is_root_clip() && self.field(f).is_none() {
+                let (val, _) = self.expr(v)?;
+                let set = if f == "x" { "setX" } else { "setY" };
+                return Ok(vec![format!("self.{set}({} * {});", paren(&val), number(self.o.size))]);
             }
         }
         // (its clip's filters, written: its colours here are the engine's shaders, `setColorFilters`)
@@ -2644,6 +2668,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // (where a clip of the object's own (not the object's class) is placed, named bare: the one
             // place every placement in the tree puts it, in the source's units)
+            // (the clip that is an object's whole art: its place is the object's)
+            Expr::Name(n) if matches!(n.as_str(), "x" | "y") && self.field(n).is_none() && self.is_root_clip() && self.record.is_none() => {
+                (format!("(self.get{}() / {})", n.to_uppercase(), number(self.o.size)), Ty::Num)
+            }
             Expr::Name(n) if matches!(n.as_str(), "x" | "y") && self.field(n).is_none() && !self.is_itself() && self.record.is_none() && self.one_placement().is_some() => {
                 let (x, y) = self.one_placement().unwrap_or_default();
                 (number(if n == "x" { x } else { y }), Ty::Num)
@@ -2659,6 +2687,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (a clip of a stage's planes: the named clip it is placed as)
             Expr::This if self.o.clip_parts.contains_key(&self.class) => { self.util("planePart")?; (format!("planePart({})", quote(&self.o.clip_parts[&self.class])), Ty::Object) }
             Expr::This if self.is_itself() => ("self".into(), Ty::Object),
+            // (the clip that is an object's whole art, as a value: the object)
+            Expr::This if self.is_root_clip() => ("self".into(), Ty::Object),
             // (the object on the scope chain that has a field or method of its own: the object itself)
             Expr::ScopeOf(n) if self.is_itself() && (self.field(n).is_some() || self.method(n).is_some()) => ("self".into(), Ty::Object),
             Expr::Member(t, n) if n == "currentFrame" && self.counts_frames() && matches!(**t, Expr::This) && self.field(n).is_none() => (self.clip_frame_helper()?, Ty::Num),
@@ -3431,6 +3461,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(id) = self.method(&format!("get:{n}")) { return Ok((format!("{id}()"), Ty::Any)) }
         // the power it holds, copied from another fighter
         if n == "KirbyPower" && self.o.fighter { self.copy_power()?; return Ok(("powerName()".into(), Ty::Str)) }
+        // (the clip that is an object's whole art: its place is the object's, in the source's units,
+        // and the object is what holds it)
+        if self.is_root_clip() {
+            match n {
+                "x" => return Ok((format!("(self.getX() / {})", number(self.o.size)), Ty::Num)),
+                "y" => return Ok((format!("(self.getY() / {})", number(self.o.size)), Ty::Num)),
+                "parent" => return Ok(("self".into(), Ty::Object)),
+                _ => {}
+            }
+        }
         Err(format!("reads {n}, which is not its own"))
     }
 
@@ -3905,6 +3945,12 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// whether the class being written is the object's own (its `this` the object itself)
     fn is_itself(&self) -> bool { self.o.itself.is_some_and(|c| c.name == self.class) }
 
+    /// whether the code is the clip that is a projectile's or item's whole art (its root clip),
+    /// whose own place and parent are the object's
+    fn is_root_clip(&self) -> bool {
+        !self.o.fighter && !self.o.stage && self.o.model.class_of(self.o.root).is_some_and(|c| c.name == self.class)
+    }
+
     /// the rules of a fighter that takes another's power: the block, and the jump and label it uses
     fn copy_power(&mut self) -> Result<(), String> {
         if !self.o.fighter { return Err("takes a power, and is no fighter".into()) }
@@ -4346,6 +4392,8 @@ impl<'o, 'a> Writer<'o, 'a> {
         // the API's own questions about the object
         if let Expr::Name(c) = &**recv {
             match (short(c), m.as_str(), args) {
+                // (the fighter a clip of a fighter-made object's belongs to: the fighter that made it)
+                (_, "getCharacter" | "getPlayer", [Expr::This]) if c.contains("PeptideAPI") && !self.o.fighter && !self.o.stage => return Ok(("self.getRootOwner()".into(), Ty::Object)),
                 (_, "getProjectile" | "getItem" | "getEnemy" | "getCharacter" | "getPlayer", [Expr::This]) if c.contains("PeptideAPI") => return Ok(("self".into(), Ty::Object)),
                 // a player by number (from 1), as the match's fighters stand in player order
                 (_, "getPlayer", [n]) if c.contains("PeptideAPI") => {
@@ -4376,6 +4424,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let (pal, _) = self.expr(pal)?;
                     self.util("paletteOn")?;
                     return Ok((format!("paletteOn(self, {pal})"), Ty::Any));
+                }
+                // whether its final smash cutscene still plays
+                (_, "isFSCutscenePlaying", []) if c.contains("PeptideAPI") => {
+                    self.util("fsCutscene")?;
+                    return Ok(("fsCutscenePlaying()".into(), Ty::Bool));
                 }
                 // a list the game hands out (`getPokemonStatsList`): the classes its package
                 // registers in it, by name, the list asked for (else the call's own default)
@@ -5407,6 +5460,36 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
                 return Ok((format!("startNamed({l})"), Ty::Bool));
             }
+            // its final smash cutscene: its own `<name>_hud` clip, made as an object of its (its class
+            // runs it) and held over the screen, bottom centre, as the source's game shows it
+            ("startFinalCutscene", []) if mine && self.o.fighter => {
+                let clip = self.o.model.fighters().first().and_then(|f| f.clip().map(String::from)).unwrap_or_default();
+                let want = format!("{clip}_hud");
+                let Some(name) = self.o.model.symbols.values().find(|n| n.eq_ignore_ascii_case(&want)).cloned() else {
+                    return Err("plays a final smash cutscene, which its package has no clip for".into());
+                };
+                let f = self.fire(&name, "self")?;
+                self.util("fsCutscene")?;
+                return Ok((format!("fsCutsceneStart({f}(0, 0))"), Ty::Any));
+            }
+            // (asked of the fighter by one of its objects: the fighter's cutscene, made by the object
+            // for the fighter)
+            ("startFinalCutscene", []) if !mine && !self.o.fighter && !self.o.stage => {
+                let name = self.o.model.fighters().first().and_then(|f| f.clip().map(String::from))
+                    .and_then(|clip| { let want = format!("{clip}_hud"); self.o.model.symbols.values().find(|n| n.eq_ignore_ascii_case(&want)).cloned() })
+                    .ok_or("plays a final smash cutscene, which its package has no clip for")?;
+                let content = crate::projectile_gen::projectile_content_id(&name);
+                self.util("fsCutscene")?;
+                return Ok((format!("{{ var fsBy = {who}; var fsMade = fsBy == null ? null : match.createProjectile(fsBy.getResource().getContent({}), fsBy); fsCutsceneStart(fsMade); }}", quote(&content)), Ty::Any));
+            }
+            ("endFinalCutscene", []) if !self.o.fighter && !self.o.stage => {
+                self.util("fsCutscene")?;
+                return Ok(("fsCutsceneEnd()".into(), Ty::Any));
+            }
+            ("endFinalCutscene", []) if mine && self.o.fighter => {
+                self.util("fsCutscene")?;
+                return Ok(("fsCutsceneEnd()".into(), Ty::Any));
+            }
             ("forceAttack" | "startAttack", [Expr::Str(label), ..]) if mine && !self.o.fighter && !self.o.item => {
                 // (asked by a clip shown inside its art, which has no such label: the attack is the
                 // object's, the label of the clip the object draws with)
@@ -6158,7 +6241,9 @@ self.playFrameLabel({})", quote(f))); }
         let plain_opts = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_)) || matches!(e, Expr::Object(kv) if kv.iter().all(|(k, _)| matches!(k, Expr::Str(k) if k == "persistent" || k == "hitStunPause" || k == "pauseHitstun" || k == "inverseCondition" || (fighter && k == "condition"))));
         // (a fighter's timer with a condition runs its code only while that holds)
         let condition = rest.iter().find_map(|e| match e { Expr::Object(kv) => kv.iter().find(|(k, _)| matches!(k, Expr::Str(k) if k == "condition")).map(|(_, v)| v.clone()), _ => None });
-        // (`inverseCondition` kept no further than this)
+        // (and one with an inverse condition runs it only while that does not hold: a final smash
+        // waiting out its cutscene)
+        let inverse = rest.iter().find_map(|e| match e { Expr::Object(kv) => kv.iter().find(|(k, _)| matches!(k, Expr::Str(k) if k == "inverseCondition")).map(|(_, v)| v.clone()), _ => None });
         // (one held while it is frozen by a hit: the engine's freeze pauses it)
         let paused = rest.iter().any(|e| matches!(e, Expr::Object(kv) if kv.iter().any(|(k, v)| matches!(k, Expr::Str(k) if k == "pauseHitstun") && matches!(v, Expr::Bool(true)))));
         if !rest.is_empty() && !rest.iter().all(plain_opts) { return Err("makes a timer with options".into()) }
@@ -6188,6 +6273,12 @@ self.playFrameLabel({})", quote(f))); }
                 Some(c) => Some(self.test(&Expr::Call(Box::new(c), vec![]))?),
                 None => None,
             };
+            let not = match inverse {
+                Some(Expr::Function(_)) => return Err("makes a timer whose inverse condition is written in place".into()),
+                Some(c) => Some(format!("!({})", self.test(&Expr::Call(Box::new(c), vec![]))?)),
+                None => None,
+            };
+            let test = match (test, not) { (Some(a), Some(b)) => Some(format!("({a}) && {b}")), (a, b) => a.or(b) };
             let call = match &test { Some(t) => format!("if ({t}) {name}()"), None => format!("{name}()") };
             let now = self.in_frame && n.parse::<f64>().is_ok_and(|v| v.round() <= 1.0);
             let left = if !now { times.clone() } else { match times.parse::<f64>() {
@@ -6991,7 +7082,7 @@ fn is_itself(v: &Expr) -> bool {
         Expr::Call(f, a) if matches!(&**f, Expr::Member(c, m) if matches!(&**c, Expr::Name(n) if n.contains("PeptideUtils")) && matches!(m.as_str(), "cast" | "cast_"))
             && !a.is_empty() => is_itself(&a[0]),
         Expr::Call(f, a) => matches!(&**f, Expr::Member(c, m) if matches!(&**c, Expr::Name(n) if n.contains("PeptideAPI"))
-            && matches!(m.as_str(), "getProjectile" | "getItem" | "getEnemy" | "getCharacter")) && matches!(a.as_slice(), [Expr::This]),
+            && (matches!(m.as_str(), "getProjectile" | "getItem" | "getEnemy") || (m == "getCharacter" && WRITING_FIGHTER.with(|w| w.get())))) && matches!(a.as_slice(), [Expr::This]),
         _ => false,
     }
 }

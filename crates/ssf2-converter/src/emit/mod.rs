@@ -83,6 +83,18 @@ pub fn own_jumps(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> cr
     j
 }
 
+thread_local! {
+    /// the objects a fighter's code holds over the screen (its final smash cutscene's clip), by
+    /// the name discovery gave them
+    static SCREEN_OBJECTS: std::cell::RefCell<BTreeSet<String>> = Default::default();
+}
+/// note the objects this conversion's fighter holds over the screen
+pub fn set_screen_objects(names: BTreeSet<String>) { SCREEN_OBJECTS.with(|c| *c.borrow_mut() = names); }
+/// whether an object (by its entity key) is one its fighter holds over the screen
+pub fn is_screen_object(key: &str) -> bool {
+    SCREEN_OBJECTS.with(|c| c.borrow().iter().any(|n| crate::projectile_gen::projectile_content_id(n) == crate::projectile_gen::projectile_content_id(key) || n == key))
+}
+
 pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, crate::compile::ClipJumps> {
     let mut out = BTreeMap::new();
     let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();

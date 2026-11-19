@@ -28,6 +28,8 @@ function initialize() {
 	// {start}
 	// {own_start}
 	// {publish}
+	// (kept out past its life by whoever needs it to play to its own end: a final smash cutscene)
+	self.exports.__keepAlive = function() { life.set(-1); };
 	// a projectile's hit is always fresh in the source: x1.05 on what each box deals
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, freshHit, { persistent: true });
 }
