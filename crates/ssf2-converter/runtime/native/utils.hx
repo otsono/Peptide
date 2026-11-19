@@ -1539,3 +1539,29 @@ function regionRect(n) {
 	if (r == null || r.rect == null) return { x: 0, y: 0, width: 0, height: 0 };
 	return { x: r.rect.x, y: r.rect.y, width: r.rect.w, height: r.rect.h };
 }
+
+// ---- formSwitch
+// a fighter turning into another fighter of its package (`replaceCharacter`): its other form, which
+// its merged conversion publishes (`__formSwitch`); one with no such form stays as it is
+function formSwitch(c, id, attack, label) {
+	if (c == null || c.exports == null || c.exports.__formSwitch == null) return null;
+	c.exports.__formSwitch(id, attack, label);
+	return null;
+}
+
+// ---- finalForm
+// a fighter taking its final form (`activateFinalForm`): the special form its declaration names
+// (`__finalForm`, published by its merged conversion), for the time it states, then its own again;
+// the transformation told to its listeners (`charTransform`)
+function finalForm(c) {
+	if (c == null || c.exports == null || c.exports.__finalForm == null || c.exports.__formSwitch == null) return null;
+	var f = c.exports.__finalForm;
+	c.exports.__formSwitch(f.id, null, null);
+	if (c.exports.__transformHeard != null) for (l in c.exports.__transformHeard.copy()) l({ caller: c });
+	if (f.frames > 0) c.addTimer(f.frames, 1, function() {
+		if (c.isDisposed()) return;
+		c.exports.__formSwitch(f.back, null, null);
+		if (c.exports.__transformHeard != null) for (l in c.exports.__transformHeard.copy()) l({ caller: c });
+	}, { persistent: true });
+	return null;
+}

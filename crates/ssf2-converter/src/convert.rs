@@ -249,6 +249,32 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
             log::error!("Failed to finalize multi-char project: {}", e);
             all_warnings.push(format!("failed to finalize multi-char project: {e}"));
         }
+        // (a fighter its package's code turns into another of the project: the other merged into it
+        // as its second form, `forms`)
+        let lib = project_dir.join("library");
+        let fighters: Vec<(String, String)> = accumulated_manifest_chars.iter()
+            .map(|c| (crate::haxe_gen::snake_to_pascal(&c.char_id), c.char_id.clone()))
+            .filter(|(folder, _)| lib.join("scripts").join(folder).join("Script.hx").exists())
+            .collect();
+        // (and a fighter whose declaration names another its special form, for its time: its final form)
+        let finals: Vec<(String, String, f64)> = std::fs::read(&opts.input).ok()
+            .and_then(|b| crate::model::SourceModel::read(&b).ok())
+            .map(|m| m.fighters().iter().filter_map(|f| {
+                let s = |k: &str| f.stats.get(k).and_then(|v| v.str()).map(String::from);
+                let n = f.stats.get("fs_time_limit").and_then(|v| match v { crate::model::declare::Value::Num(n) => Some(*n), _ => None }).unwrap_or(0.0);
+                Some((s("normalStats_id")?, s("specialStats_id")?, n))
+            }).collect()).unwrap_or_default();
+        let pairs = crate::forms::pairs(&lib, &fighters, &finals);
+        if !pairs.is_empty() {
+            let rt = crate::compile::Runtime::locate().map(|d| crate::compile::Runtime::load(&d)).unwrap_or_default();
+            match rt.native_files.get("forms") {
+                Some(skel) => if let Err(e) = crate::forms::merge_all(&lib, &pairs, &finals, skel) {
+                    log::error!("merging forms: {e}");
+                    all_warnings.push(format!("merging forms: {e}"));
+                },
+                None => all_warnings.push("runtime/native/forms.hx is missing".into()),
+            }
+        }
     }
 
     // Clean up temp costumes file if we created it

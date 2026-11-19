@@ -6403,6 +6403,15 @@ self.playFrameLabel({})", quote(f))); }
                 format!("if ({who} != null && !{who}.isDisposed() && {id}.get() >= 0) {who}.removeTimer({id}.get());\n{id}.set(-1)")
             }, Ty::Any));
         }
+        // a fighter turned into its other form (`charTransform`): told by the turn (`finalForm`)
+        if name == "charTransform" {
+            let h = self.handler(handler)?;
+            return Ok((if m == "addEventListener" {
+                format!("if ({who} != null) {{ if ({who}.exports.__transformHeard == null) {who}.exports.__transformHeard = []; {who}.exports.__transformHeard.remove({h}); {who}.exports.__transformHeard.push({h}); }}")
+            } else {
+                format!("if ({who} != null && {who}.exports.__transformHeard != null) {who}.exports.__transformHeard.remove({h})")
+            }, Ty::Any));
+        }
         // an item it holds thrown (`itemTossed` heard on the fighter): told by the item's handler as
         // it lets the item go
         if name == "itemTossed" && !(self.o.item && who == "self") {

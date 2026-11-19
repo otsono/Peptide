@@ -633,9 +633,14 @@
   "setTeamID": {"code": "null", "returns": "object", "gap": "setTeamID: changing a fighter's team"},
   // (a final smash cutscene another object asks of a fighter: the fighter's own, which its code plays)
   "startFinalCutscene": {"code": "null", "returns": "object", "gap": "startFinalCutscene: a final smash cutscene asked of another fighter"},
-  "swapFighter": {"code": "null", "returns": "object", "gap": "swapFighter: turning into another fighter"},
+  // turning into another fighter of the package (`replaceCharacter(id, attack, label)`): the
+  // fighter's own other form, where its conversion merged the two (`__formSwitch`), going on in
+  // that form's attack at the label; a fighter with no such form stays as it is
+  "swapFighter": {"code": "formSwitch({self}, {0}, {1}, {2})", "helper": "formSwitch", "returns": "object"},
   "throbDamage": "null",
-  "toFinalForm": {"code": "null", "returns": "object", "gap": "toFinalForm: a final form"},
+  // its final form: the special form its declaration names, for the time it states, then back
+  // (where its conversion merged the two, `__finalForm`)
+  "toFinalForm": {"code": "finalForm({self})", "helper": "finalForm", "returns": "object"},
   "flipX": "{self}.flipX({0})",
   "resetKnockback": "{self}.setXKnockback(0); {self}.setYKnockback(0)",
   "resetMovement": "{self}.setXSpeed(0); {self}.setYSpeed(0)",

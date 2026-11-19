@@ -45,6 +45,7 @@ pub fn dyn_re(pattern: &str) -> std::sync::Arc<regex::Regex> {
 
 // Public modules — exposed for use by binaries in src/bin/
 pub mod ssf2_manifest;
+pub mod forms;
 pub mod ssf;
 pub mod test_fixture;
 pub mod uuid_gen;
