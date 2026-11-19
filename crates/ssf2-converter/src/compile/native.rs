@@ -3461,6 +3461,10 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(id) = self.method(&format!("get:{n}")) { return Ok((format!("{id}()"), Ty::Any)) }
         // the power it holds, copied from another fighter
         if n == "KirbyPower" && self.o.fighter { self.copy_power()?; return Ok(("powerName()".into(), Ty::Str)) }
+        // (a clip's own property its package never sets anywhere: Flash gives undefined, nothing)
+        if self.o.model.classes.get(&self.class).is_some_and(|c| matches!(short(&c.super_name), "MovieClip" | "Sprite")) && !self.set_anywhere(n) {
+            return Ok(("null".into(), Ty::Object));
+        }
         // (the clip that is an object's whole art: its place is the object's, in the source's units,
         // and the object is what holds it)
         if self.is_root_clip() {
@@ -3944,6 +3948,19 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// whether the class being written is the object's own (its `this` the object itself)
     fn is_itself(&self) -> bool { self.o.itself.is_some_and(|c| c.name == self.class) }
+
+    /// whether any class of the package writes a field or property of this name anywhere
+    fn set_anywhere(&self, n: &str) -> bool {
+        let mut found = false;
+        for c in self.o.model.classes.values() {
+            for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor, &c.static_init]) {
+                walk(&f.body, &mut |st| if let Stmt::Assign(Place::Member(_, g) | Place::Name(g), _) = st { if g == n { found = true } });
+                if found { return true }
+            }
+            if c.fields.iter().any(|d| d.name == n) { return true }
+        }
+        found
+    }
 
     /// whether the code is the clip that is a projectile's or item's whole art (its root clip),
     /// whose own place and parent are the object's

@@ -656,6 +656,8 @@
   "toBarrel": {"code": "if ({self}.getType() == EntityType.CHARACTER) {self}.toState(CState.DISABLED)", "returns": "object"},
   // every projectile in the match
   "PeptideAPI.getProjectiles": { "code": "match.getProjectiles()", "returns": "object" },
+  // a projectile by its id: the one in the match with that id, else none
+  "PeptideAPI.getProjectile": { "code": "projectileById({0})", "helper": "projectileById", "returns": "object" },
   // the game's own match and progress calls, which nothing here has: a fighter put in the match by
   // code, a player's control handed over, a final smash given, lives set, an unlock earned
   "PeptideAPI.spawnCharacter": { "code": "null", "returns": "object", "gap": "spawnCharacter: a fighter put in the match by code" },

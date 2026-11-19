@@ -1481,3 +1481,11 @@ function selfDestructHeard(c, h) {
 function selfDestructDrop(c, h) {
 	if (c != null && c.exports != null && c.exports.__sdListeners != null) c.exports.__sdListeners.remove(h);
 }
+
+// ---- projectileById
+// a projectile by its id (`getProjectile(id)`): the one in the match with that id, else none
+function projectileById(id) {
+	if (id == null) return null;
+	for (p in match.getProjectiles()) if (!p.isDisposed() && p.getUid() == id) return p;
+	return null;
+}
