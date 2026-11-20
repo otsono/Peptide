@@ -270,7 +270,7 @@
   // into its grab's hold with the one it holds (let go of in the air)
   "toGrabbing": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length == 1) { if (!{self}.isOnFloor()) {self}.releaseAllCharacters(); else {self}.toState(CState.GRAB_HOLD); }",
   // the one it holds let go of (the launch the source spits it out with is not ported)
-  "ejectOpponent": { "code": "{self}.releaseAllCharacters()", "gap": "ejectOpponent: the launch of the one spat out" },
+  "ejectOpponent": { "code": "ejectFoes({self})", "helper": "ejectFoes", "gap": "ejectOpponent: the star the one spat out flies as hits nothing here" },
   // the attack it is in, by the source's name for it (its clip's label): what a fighter publishes,
   // else the animation it plays
   "getCurrentFrame": { "code": "({self} == null ? null : ({self}.exports.__label != null ? {self}.exports.__label() : {self}.getAnimation()))", "returns": "string" },

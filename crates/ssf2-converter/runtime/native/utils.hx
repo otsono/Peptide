@@ -2009,3 +2009,24 @@ function partOf(o, n) {
 	if (o == null || o.isDisposed() || o.exports == null || o.exports.__part == null) return null;
 	return o.exports.__part(n);
 }
+
+// ---- ejectFoes
+// the fighters it holds shot out (`ejectOpponent`): let go, dealt 10, and sent flying the way it
+// faces at 15 (the source's units, its speeds being the fighter's facing's) for thirteen source frames
+function ejectFoes(c) {
+	if (c == null || c.getAllGrabbedFoes == null) return;
+	var foes = c.getAllGrabbedFoes();
+	if (foes == null) return;
+	var held = foes.copy();
+	c.releaseAllCharacters();
+	var dir = c.isFacingRight() ? 1 : -1;
+	for (f in held) {
+		if (f == null || f.isDisposed()) continue;
+		f.setVisible(true);
+		f.addDamage(10);
+		// (facing the one that spat it, flying backwards: the way the spitter faces)
+		if (dir > 0) f.faceLeft(); else f.faceRight();
+		var left = 26;
+		f.addTimer(1, 26, function() { if (left > 0) { f.setXSpeed(-15 * SPEED); f.setYSpeed(0); left--; } }, { persistent: true });
+	}
+}
