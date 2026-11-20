@@ -2050,3 +2050,17 @@ function costumeOfName(name, ?team, ?costume) {
 	}
 	return null;
 }
+
+// ---- nestedClips
+// the clips with code of their own its clip places inside its art: each a record whose timeline
+// runs its own frames' code (`clipRun`), made as its clip's timeline places it and stopped as the
+// timeline takes it off (its art is drawn whole into its own)
+var nestedNow = [];
+function nestedOn(n, r) {
+	nestedOff(n);
+	r.nestedName = n;
+	nestedNow.push(r);
+}
+function nestedOff(n) {
+	for (r in nestedNow.copy()) if (r.nestedName == n) { r.playing = false; clipsRunning.remove(r); nestedNow.remove(r); }
+}

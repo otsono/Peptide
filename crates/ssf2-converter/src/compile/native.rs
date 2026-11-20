@@ -244,6 +244,9 @@ pub struct Object<'a> {
     pub power_record: bool,
     /// an object's parts: the named children of its clip its code turns, drawn apart (`projPart`)
     pub own_parts: Vec<crate::emit::ObjPart>,
+    /// the clips with code of their own nested in its art, by class: each a record whose timeline
+    /// runs as its parent's places it (`nestedClip`)
+    pub nested: Vec<String>,
 }
 
 /// one of a fighter's parts: how its code names it, and each animation that places it, as
@@ -768,6 +771,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (not one an API class's record form is: a FrameTimer)
             && !o.runtime.provides(&c.name) && flat_template(o.runtime, short(n)).is_none()
             && !o.runtime.names.classes.iter().any(|(src, r)| short(r) == short(&c.name) && flat_template(o.runtime, src).is_some()));
+        // (a clip with code of its own nested in its art: a record whose timeline runs)
+        for n in &o.nested {
+            if let Some(k) = o.model.classes.get(n) { if !w.recs.iter().any(|r| r.name == k.name) { w.recs.push(k); } }
+        }
         let mut grow = true;
         while grow {
             grow = false;
@@ -1780,7 +1787,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let (t, _) = self.api(&who, m, args)?;
                     return Ok(format!("{t};"));
                 }
-                {
+                // (a clip record of its own: its own timeline, below)
+                if !self.record.as_ref().is_some_and(|k| self.clip_recs.contains(k)) {
                     match (m.as_str(), args.as_slice()) {
                         // the engine plays the clip the object shows on every frame, whatever a stop on
                         // it says

@@ -79,13 +79,14 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // inside it with code of its own is said in its gaps
     let shown: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
     let mut classes = Vec::new();
+    let mut nested: Vec<String> = Vec::new();
     for sym in clip_tree(model, Some(clip_sym)).into_iter().filter(|_| !bare) {
         let Some(c) = model.class_of(sym) else { continue };
         if runtime.provides(&c.name) { continue }
         if shown.contains(&sym) { classes.push(c) }
         // (a clip nested in its art with code of its own: its art is drawn whole, and its code is
         // said, not run)
-        else if !is_quiet_inside(model, runtime, &c.name) { gaps.push(format!("{} inside its art has code of its own, which nothing here runs", compile::short(&c.name))) }
+        else if !is_quiet_inside(model, runtime, &c.name) { nested.push(c.name.clone()) }
     }
     // (one with no code of its own is the skeleton and what it declares alone)
     // a clip whose code its owner reaches into keeps the object the owner holds
@@ -257,7 +258,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false, own_parts: crate::emit::object_parts(entity_key),
+        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false, own_parts: crate::emit::object_parts(entity_key), nested: nested.clone(),
     };
     let wrote = !(bare || (classes.is_empty() && itself.is_none()));
     let written = if wrote { native::write(&object)? } else { native::Written::default() };
@@ -277,6 +278,8 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // (its parts, drawn apart from its art where its clip places them, `projPart`: where its code
     // is written, which carries the helper)
     let parts = if wrote { crate::emit::object_parts(entity_key) } else { Vec::new() };
+    // (the clips with code of their own nested in its art: their records, `nestedOn`)
+    if wrote && !nested.is_empty() { functions.push(native::helper(runtime, "utils", "nestedClips", "nestedClips", &[], &[])?); }
     if !taken.code.is_empty() {
         functions.push(format!("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n{}", taken.code.join("\n")));
     }
@@ -386,7 +389,25 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // its entity: each frame with code calls it, and each animation plays on into the next
     let content = crate::projectile_gen::projectile_content_id(entity_key);
     let entity_path = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
-    keyframes_with(&entity_path, entity_key, model, pieces, &written.frames, true, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    // (each clip with code of its own nested in its art: made as its clip's timeline places it, and
+    // stopped as the timeline takes it off, `nestedOn` / `nestedOff`)
+    let mut frames_all = written.frames.clone();
+    for n in &nested {
+        let Some(sym) = model.classes.get(n).and_then(|c| c.symbol) else { continue };
+        let id = compile::ident(compile::short(n));
+        for p in pieces {
+            let Some(sp) = model.sprites.get(&p.sym) else { continue };
+            let mut was = false;
+            for (i, fr) in sp.frames.iter().enumerate() {
+                let here = fr.iter().any(|q| q.char_id == sym);
+                let f = i as u32 + 1;
+                let line = if here && !was { Some(format!("nestedOn(\"{id}\", {id}_new());")) } else if !here && was { Some(format!("nestedOff(\"{id}\");")) } else { None };
+                was = here;
+                if let Some(l) = line { let e = frames_all.entry((p.sym, f)).or_default(); if !e.is_empty() { e.push('\n'); } e.push_str(&l); }
+            }
+        }
+    }
+    keyframes_with(&entity_path, entity_key, model, pieces, &frames_all, true, &BTreeMap::new()).map_err(|e| e.to_string())?;
     let anim_stats = char_dir.join(format!("library/scripts/Projectile/{}AnimationStats.hx", crate::haxe_gen::snake_to_pascal(entity_key)));
     plays_on(&anim_stats, model, pieces).map_err(|e| e.to_string())?;
     gaps.extend(written.gaps.iter().cloned());

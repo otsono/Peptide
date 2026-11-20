@@ -256,7 +256,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
             if super::plays_once(model, p).is_some() { return None }
             super::effect_code(model, ps).map(|c| (n.clone(), c))
         }).collect(),
-        instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(), own_parts: Vec::new(),
+        instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(), own_parts: Vec::new(), nested: Vec::new(),
     };
     // (`all`: every statement it has no plain form for, as reasons, for the census)
     if all {
