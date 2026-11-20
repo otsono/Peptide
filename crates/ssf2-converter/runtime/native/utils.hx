@@ -135,6 +135,12 @@ function numberIn(n, base) {
 // brightness/contrast filter, and a colour shader for the channels, each replacing the last it set
 // on that object; none (`null`, `false`) takes them off
 var colorFiltersOn = self.makeObject(null);
+// (the colour settings its code last put on an object, which put back are the same)
+function colorFiltersOf(t) {
+	if (t == null || t.getUid == null || colorFiltersOn.get() == null) return null;
+	var was = colorFiltersOn.get().get(Std.string(t.getUid()));
+	return was == null ? null : was.o;
+}
 function colorFilters(t, o) {
 	// (a copy of a fighter's body, `bodyCopy`: drawn in that fighter's own colours already)
 	if (t != null && t.body != null) return;
@@ -150,7 +156,7 @@ function colorFilters(t, o) {
 	}
 	if (o == null || o == false) { t.setAlpha(1); return; }
 	if (o.alphaMultiplier != null) t.setAlpha(o.alphaMultiplier);
-	var on = { f: null, s: null };
+	var on = { f: null, s: null, o: o };
 	if (o.hue != null || o.saturation != null || o.brightness != null || o.contrast != null) {
 		var h = new HsbcColorFilter();
 		if (o.hue != null) h.hue = o.hue;

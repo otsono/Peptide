@@ -1954,9 +1954,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // (its clip's filters, written: its colours here are the engine's shaders, `setColorFilters`)
         if let Place::Member(o, f) = p {
+            // (the colour settings it read off them, put back: `colorFilters`)
             if f == "filters" && self.own_clip_call(o) {
-                self.gaps.insert("writes its clip's filters, which its colours here are not kept as".into());
-                return Ok(vec!["// (its clip's filters: its colours here are the engine's shaders)".into()]);
+                let (val, _) = self.expr(v)?;
+                self.util("colorFilters")?;
+                return Ok(vec![format!("colorFilters(self, {val});")]);
             }
         }
         // (an object its code uses as a map, made: a map by text)
@@ -3117,9 +3119,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (who, Ty::Body)
             }
             // its clip's filters, read: none here (its colours are the engine's shaders, `setColorFilters`)
+            // (the colour settings its code last put on it, `colorFilters`; none, nothing)
             Expr::Member(o, n) if n == "filters" && self.own_clip_call(o) => {
-                self.gaps.insert("reads its clip's filters, which its colours here are not kept as".into());
-                return Ok(("null".into(), Ty::Any));
+                self.util("colorFilters")?;
+                return Ok(("colorFiltersOf(self)".into(), Ty::Any));
             }
             // a field of a field of its own that no code ever fills (the source's engine fills it, in a
             // mode this engine has none of): nothing, as that field is
@@ -3494,8 +3497,9 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(made) = self.own_part(n) { return Ok((made, Ty::Rect)) }
         if let Some(at) = self.placed_child(n) {
             // (a record holding its look as the clip's placement starts it, which its code reads
-            // and writes as the source's does; drawn nowhere)
-            self.gaps.insert(format!("turns its {n} clip, whose art is drawn into its own"));
+            // and writes as the source's does; drawn nowhere, so a change its code makes to it shows
+            // nothing: said where its code makes one)
+            if self.turns_placed(n) { self.gaps.insert(format!("turns its {n} clip, whose art is drawn into its own")); }
             let id = format!("{}__clip", ident(n));
             self.kept.insert(id.clone(), format!("// the look of its {n} clip, as its code turns it\nvar {id} = self.makeObject(null);"));
             if !self.helpers.contains_key("placedClip") {
@@ -6871,6 +6875,23 @@ self.playFrameLabel({})", quote(f))); }
         let p = self.o.own_parts.iter().find(|p| p.path == n)?.clone();
         self.util("projPart").ok()?;
         Some(part_call(&p))
+    }
+
+    /// whether any class of the package changes a clip its clip places under this name: writes a
+    /// property of it, or sends it to a frame
+    fn turns_placed(&self, n: &str) -> bool {
+        let is = |e: &Expr| matches!(e, Expr::Member(t, f) if f == n && matches!(**t, Expr::This)) || matches!(e, Expr::Name(f) if f == n);
+        let mut found = false;
+        for c in self.o.model.classes.values() {
+            for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
+                walk(&f.body, &mut |st| if let Stmt::Assign(Place::Member(o, _), _) = st { if is(o) { found = true } });
+                walk_exprs(&f.body, &mut |e| if let Expr::Call(g, _) = e {
+                    if matches!(&**g, Expr::Member(o, m) if is(o) && matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "play" | "stop" | "nextFrame" | "prevFrame")) { found = true }
+                });
+                if found { return true }
+            }
+        }
+        false
     }
 
     fn placed_child(&self, n: &str) -> Option<(f64, f64, f64, f64, f64)> {
