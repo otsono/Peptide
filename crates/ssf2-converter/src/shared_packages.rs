@@ -270,3 +270,43 @@ pub fn metal_look() -> Option<std::collections::BTreeMap<String, f64>> {
         None
     }).clone()
 }
+
+/// The box a fighter shot out as a star hits with, as the installed game's own fighter declares it
+/// as it is made (the attack named `star` its code fills in): each numeric stat by name. Read from
+/// the game movie itself, so nothing of it is carried here.
+pub fn star_attack() -> Option<std::collections::BTreeMap<String, f64>> {
+    use crate::model::ast::{walk_exprs, Expr};
+    static MEMO: OnceLock<Option<std::collections::BTreeMap<String, f64>>> = OnceLock::new();
+    MEMO.get_or_init(|| {
+        let data = data_dir()?;
+        let raw = std::fs::read(game_swf(&data)?).ok()?;
+        let bytes = crate::ssf::decompress(&raw).unwrap_or(raw);
+        let model = crate::model::SourceModel::read(&bytes).ok()?;
+        let mut found: Option<std::collections::BTreeMap<String, f64>> = None;
+        for c in model.classes.values() {
+            for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
+                walk_exprs(&f.body, &mut |e| {
+                    if found.is_some() { return }
+                    let Expr::Call(g, a) = e else { return };
+                    let Expr::Member(on, m) = &**g else { return };
+                    if m != "importAttackData" { return }
+                    let named_star = matches!(&**on, Expr::Call(h, ha) if matches!(&**h, Expr::Member(_, n) if n == "getAttack") && matches!(ha.as_slice(), [Expr::Str(s)] if s == "star"));
+                    if !named_star { return }
+                    let Some(Expr::Object(kv)) = a.first() else { return };
+                    // (its first box's numbers)
+                    let boxes = kv.iter().find(|(k, _)| matches!(k, Expr::Str(s) if s == "attackBoxes")).map(|(_, v)| v);
+                    let Some(Expr::Object(bs)) = boxes else { return };
+                    let Some((_, Expr::Object(b))) = bs.first() else { return };
+                    let mut out = std::collections::BTreeMap::new();
+                    for (k, v) in b {
+                        let (Expr::Str(k), n) = (k, v) else { continue };
+                        let n = match n { Expr::Int(i) => *i as f64, Expr::Num(x) => *x, _ => continue };
+                        out.insert(k.clone(), n);
+                    }
+                    if !out.is_empty() { found = Some(out) }
+                });
+            }
+        }
+        found
+    }).clone()
+}

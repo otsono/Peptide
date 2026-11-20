@@ -2027,7 +2027,26 @@ function ejectFoes(c) {
 		// (facing the one that spat it, flying backwards: the way the spitter faces)
 		if (dir > 0) f.faceLeft(); else f.faceRight();
 		var left = 26;
-		f.addTimer(1, 26, function() { if (left > 0) { f.setXSpeed(-15 * SPEED); f.setYSpeed(0); left--; } }, { persistent: true });
+		// (and hitting, as the star it flies as, each fighter its body meets on the way, once,
+		// for the one that spat it: STAR_HIT, as the game declares the star's box)
+		var struck = [c, f];
+		f.addTimer(1, 26, function() {
+			if (left <= 0) return;
+			f.setXSpeed(-15 * SPEED);
+			f.setYSpeed(0);
+			left--;
+			var hit = STAR_HIT;
+			if (hit == null || c.isDisposed()) return;
+			for (o in match.getCharacters()) {
+				if (o == null || o.isDisposed() || struck.indexOf(o) >= 0) continue;
+				var met = f.hitTestEntity(o, CollisionBoxType.HURT, CollisionBoxType.HURT);
+				if (met == null || met.length == 0) continue;
+				struck.push(o);
+				var s = new HitboxStats(hit);
+				c.syncHitboxStats(s);
+				c.attemptHit(o, s, null);
+			}
+		}, { persistent: true });
 	}
 }
 

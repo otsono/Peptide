@@ -3944,6 +3944,11 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a function of `runtime/native/utils.hx`, written once
     fn util(&mut self, name: &str) -> Result<String, String> {
         // (the stage's camera settings, as the conversion declares them)
+        // (the hit the star a fighter is shot out as lands, as the installed game declares it,
+        // through the box-stat mapping: `star_hit`)
+        if name == "ejectFoes" && !self.helpers.contains_key(name) {
+            self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("STAR_HIT", star_hit())], &[])?);
+        }
         // (the source's animation names, as the engine's: `mappings/character/animations.jsonc`)
         if name == "bodyCopy" && !self.helpers.contains_key(name) {
             let cases: Vec<String> = crate::mappings::character_animations().ssf2_to_fm.iter().map(|(k, v)| format!("case {}: anim = {};", quote(k), quote(v))).collect();
@@ -7479,6 +7484,24 @@ fn record(arg: &str, field: &str) -> Result<Option<(String, Ty)>, String> {
     if let Some((code, is)) = t.record.get(field) { return Ok(Some((code.replace("{arg}", arg), Ty::named(is)))) }
     if t.unrecorded.iter().any(|f| f == field) { return Err(format!("reads the {field} of the event it is handed")) }
     Ok(None)
+}
+
+/// the hit a fighter shot out as a star lands (`ejectFoes`), as the installed game declares it,
+/// in this engine's fields by the box-stat mapping; none where the game is not to hand
+fn star_hit() -> String {
+    let Some(raw) = crate::shared_packages::star_attack() else { return "null".into() };
+    let m = crate::mappings::character_hitbox_stats();
+    let get = |k: &str| raw.get(k).copied();
+    let damage = get("damage").unwrap_or(0.0);
+    let (base, growth) = if crate::mappings::HitboxStatsMapping::is_fixed_knockback(&raw) {
+        (m.fixed_knockback(&raw).unwrap_or(0.0) * m.scale_for("baseKnockback"), 0.0)
+    } else {
+        (get("power").unwrap_or(0.0) * m.scale_for("baseKnockback"), get("kbConstant").unwrap_or(0.0) * m.scale_for("knockbackGrowth"))
+    };
+    let freeze = match get("hitStun") { Some(n) if n > 0.0 => n + m.plus_frames_for("hitstop"), _ => m.unstated_freeze("hitstop", damage).unwrap_or(0.0) } * 2.0;
+    let stun = match get("hitLag") { Some(n) if n > 0.0 => n * 2.0, Some(n) => n, None => -1.0 };
+    format!("{{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, hitstop: {}, hitstun: {} }}",
+        number(damage), number(get("direction").unwrap_or(0.0)), number(base), number(growth), number(freeze), number(stun))
 }
 
 /// whether a record's setup makes a clip record for a clip its clip places under this name
