@@ -432,6 +432,8 @@ function fadeTo(o, to) {
 // it is sent, an effect by its own frame calls; to nothing, held or played where it is
 function clipJump(c, to, hold) {
 	if (c == null) return;
+	// (a clip record with a timeline of its own, `clipRun`: its timeline's)
+	if (c.labelList != null && c.totalFrames != null) { clipGo(c, to, hold); return; }
 	if (c.playLabel != null) { if (to == null) c.hold(hold); else c.playLabel(to, hold); return; }
 	if (to != null) { if (Std.isOfType(to, String)) c.playFrameLabel(to); else c.playFrame(Std.int(to) * 2 - 1); }
 	if (hold) c.pause(); else c.resume();
@@ -1782,7 +1784,11 @@ function projPart(n, x, y, r, sx, sy, art, total, labels) {
 	p.vfx = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(CONTENT), animation: art, loop: true, timeout: -1 }), self);
 	if (p.vfx != null) p.vfx.pause();
 	clipRun(p, total < 1 ? 1 : total, labels, null);
-	if (partsShown.length == 0) self.addEventListener(EntityEvent.DISPOSE, partsGone, { persistent: true });
+	if (partsShown.length == 0) {
+		self.addEventListener(EntityEvent.DISPOSE, partsGone, { persistent: true });
+		// (another object's code reaches its parts by name, through its clip: `partOf`)
+		self.exports.__part = function(n) { for (q in partsShown) if (q.name == n) return q; return null; };
+	}
 	partsShown.push(p);
 	partsFollow();
 	return p;
@@ -1885,3 +1891,115 @@ function earlyListen() {
 }
 // (told only as its first frame listens: a listener added later hears only the hits after it)
 function heardEarly(t, h) { for (x in earlyHits.copy()) if (x.t == t && match.getElapsedFrames() - x.at <= 2) h(x.e); }
+
+// ---- homingPick
+// the target the source's engine picks for one that homes (`getHomingTarget`): the nearest fighter
+// that is not itself, its owner or on its team, and not knocked out or dodging through the air,
+// told to its `homingTarget` listeners as it changes
+var homingHeard = [];
+var homingLast = null;
+function homingPick() {
+	var me = self.getType() == EntityType.CHARACTER ? self : self.getRootOwner();
+	var best = null;
+	var bd = 0.0;
+	for (c in match.getCharacters()) {
+		if (c == null || c == me || c.isDisposed() || c.inStateGroup(CStateGroup.KO) || c.inStateGroup(CStateGroup.AIRDASH)) continue;
+		if (me != null && c.getTeam() == me.getTeam()) continue;
+		var d = Math.sqrt(Math.pow(c.getX() - self.getX(), 2) + Math.pow(c.getY() - self.getY(), 2));
+		if (best == null || d < bd) { best = c; bd = d; }
+	}
+	if (best != homingLast) {
+		homingLast = best;
+		if (best != null) for (h in homingHeard.copy()) h({ data: { caller: self, target: best, type: "Character" } });
+	}
+	return best;
+}
+
+// ---- koPoint
+// a knock-out a fighter is credited with (`charKOPoint`, on that fighter): told as another fighter is
+// knocked out with its own count of knock-outs gone up
+var koPointHeard = [];
+function koPointListen(f, h) {
+	if (f == null || f.getScore == null) return;
+	for (k in koPointHeard.copy()) if (k.f == f && k.h == h) return;
+	var rec = { f: f, h: h, count: f.getScore().kos, on: true };
+	koPointHeard.push(rec);
+	for (c in match.getCharacters()) if (c != f) c.addEventListener(CharacterEvent.KNOCK_OUT, function(e) {
+		if (!rec.on || f.isDisposed()) return;
+		var now = f.getScore().kos;
+		if (now > rec.count) h({ data: { caller: f, victim: c } });
+		rec.count = now;
+	}, { persistent: true });
+}
+function koPointUnlisten(f, h) {
+	for (k in koPointHeard.copy()) if (k.f == f && k.h == h) { k.on = false; koPointHeard.remove(k); }
+}
+
+// ---- attackCancel
+// an attack of its cut off by another it starts (`charAttackCancelled`): told as one begins while
+// another has not ended
+var attackCancelHeard = [];
+var attackCancelWatching = false;
+var attackRunning = false;
+function attackCancelListen(h) {
+	attackCancelHeard.remove(h);
+	attackCancelHeard.push(h);
+	if (attackCancelWatching) return;
+	attackCancelWatching = true;
+	self.addEventListener(CharacterEvent.ATTACK_START, function(e) {
+		if (attackRunning) for (k in attackCancelHeard.copy()) k({ data: { caller: self } });
+		attackRunning = true;
+	}, { persistent: true });
+	self.addEventListener(CharacterEvent.ATTACK_END, function(e) { attackRunning = false; }, { persistent: true });
+}
+
+// ---- itemCreated
+// a listener on the game for an item made (`gameItemCreated`): told by each item as it starts
+// (`item.hx`), kept in the match's globals, which every object's code reaches
+function itemCreatedListen(h, on) {
+	if (match.globals.__itemCreatedHeard == null) match.globals.__itemCreatedHeard = [];
+	var l = match.globals.__itemCreatedHeard;
+	l.remove(h);
+	if (on) l.push(h);
+}
+
+// ---- sizeStatus
+// a fighter's size status (`setSizeStatus`): -1 half its size, 1 twice it, 0 its own, back to its
+// own after ten seconds (three hundred source frames), its `charSizeChange` listeners told of each
+// change; kept in the match's globals by the fighter, which every object's code reaches
+function sizeRec(c) {
+	if (match.globals.__sizes == null) match.globals.__sizes = [];
+	for (r in match.globals.__sizes) if (r.c == c) return r;
+	var r = { c: c, status: 0, base: c.getScaleX(), heard: [], timer: -1 };
+	match.globals.__sizes.push(r);
+	return r;
+}
+function sizeOf(c) { return c == null ? 0 : sizeRec(c).status; }
+function sizeSet(c, s) {
+	if (c == null || c.isDisposed()) return;
+	var r = sizeRec(c);
+	s = s < 0 ? -1 : (s > 0 ? 1 : 0);
+	if (s == r.status) return;
+	r.status = s;
+	var k = s < 0 ? 0.5 : (s > 0 ? 2 : 1);
+	c.setScaleX(r.base * k);
+	c.setScaleY(r.base * k);
+	if (r.timer >= 0) { c.removeTimer(r.timer); r.timer = -1; }
+	if (s != 0) r.timer = c.addTimer(600, 1, function() { r.timer = -1; sizeSet(c, 0); }, { persistent: true });
+	for (h in r.heard.copy()) h({ data: { caller: c, sizeStatus: s } });
+}
+function sizeListen(c, h, on) {
+	if (c == null) return;
+	var r = sizeRec(c);
+	r.heard.remove(h);
+	if (on) r.heard.push(h);
+}
+
+// ---- partOf
+//: needs clipRun
+// a named clip another object's clip places that its code turns, by that name: the part the object
+// draws apart and publishes (`projPart`), or nothing where it has none of that name
+function partOf(o, n) {
+	if (o == null || o.isDisposed() || o.exports == null || o.exports.__part == null) return null;
+	return o.exports.__part(n);
+}

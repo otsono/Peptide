@@ -325,6 +325,9 @@ function initialize() {
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
 	self.exports.__takeBy = takenBy;
+	// (the game's listeners for an item made, `itemCreatedListen`: told of this one)
+	var told = match.globals.__itemCreatedHeard;
+	if (told != null) for (h in told.copy()) h({ data: { item: self, auto: false } });
 	self.exports.__inItemState = inItemState;
 	// (the one that made it, kept for its code's asks of its maker once its blast is anyone's)
 	self.exports.__maker = self.getOwner();

@@ -31,12 +31,19 @@
     // the object itself gone: its disposal
     "charDestroyed":        "EntityEvent.DISPOSE",
     "enemyDestroyed":       "EntityEvent.DISPOSE",
+    "itemDestroyed":        "EntityEvent.DISPOSE",
     // the attack it is in changed: one begun
     "charAttackChanged":    "CharacterEvent.ATTACK_START"
   },
   // the events the game itself raises for a listener its code adds on the API, as the runtime does:
   // any other one added there is never told
   "game": ["gameTickEnd", "targetBroken"],
+  // events the source names that its engine never raises: a listener for one is never told there,
+  // nor here
+  "never_raised": ["attackClank"],
+  // every event the source's game raises on its own (a listener on the game for any other is never
+  // told there, nor here): the ones above, and the items it makes and ends
+  "game_raised": ["gameTickStart", "gameTickEnd", "gamePaused", "gameUnpaused", "gameEnded", "gameItemCreated", "gameItemDestroyed", "targetBroken"],
   // the events the game raises that this engine's match raises itself: a listener on the game for
   // one is the match's own listener for it
   "match": {
@@ -84,6 +91,8 @@
     "top":       { "code": "{arg}.data.structureType == StructureType.CEILING", "is": "bool" },
     // the attack an attack's event is of: its record (`attackEnabled` tells its name)
     "attackData": { "code": "{arg}.data.attackData", "is": "record" },
+    // the size status a fighter changed to (`sizeStatus`)
+    "sizeStatus": { "code": "{arg}.data.sizeStatus", "is": "number" },
     // whether the fighter is metal now, as its turn tells (`metalOn`)
     "isMetal":   { "code": "({arg} != null && {arg}.isMetal == true)", "is": "bool" }
   },
@@ -91,5 +100,5 @@
   // translates yet. a field in neither list is in no record of the source's: reading it gives
   // nothing there, and so it does here
   "unrecorded": ["attackBoxData", "auto", "callerAttackBoxData", "fromState", "holder",
-    "receiverAttackBoxData", "sizeStatus", "target", "toState", "type", "victim"]
+    "receiverAttackBoxData", "target", "toState", "type", "victim"]
 }

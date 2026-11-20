@@ -669,7 +669,9 @@
   "breakTarget": "{self}.isDisposed() ? null : {self}.kill()",
   "initialize": "null",
   "update": "null",
-  "getSizeStatus": "0",
+  // its size status, as its code sets it (`sizeStatus`)
+  "getSizeStatus": { "code": "sizeOf({self})", "helper": "sizeStatus", "returns": "number" },
+  "setSizeStatus": { "code": "sizeSet({self}, {0})", "helper": "sizeStatus" },
   // a fighter shut in a barrel: out of its own control (the engine's disabled state) until the
   // stage's code lets it go; the stage holds it, hides it and moves it itself
   "toBarrel": {"code": "if ({self}.getType() == EntityType.CHARACTER) {self}.toState(CState.DISABLED)", "returns": "object"},

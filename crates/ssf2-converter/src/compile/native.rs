@@ -4613,6 +4613,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.util("bodyCopy")?;
                     return Ok((format!("bodyCopy({who})"), Ty::Rect));
                 }
+                // a listener on the game for an item made: told by each item as it starts (`itemCreated`)
+                (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI")
+                    && super::events::named(self.o.runtime, ev).is_some_and(|n| n == "gameItemCreated") => {
+                    let h = self.handler(h)?;
+                    self.util("itemCreated")?;
+                    return Ok((format!("itemCreatedListen({h}, {})", m == "addEventListener"), Ty::Any));
+                }
                 // a listener on the game for one this engine's match raises: the match's own
                 (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI")
                     && super::events::named(self.o.runtime, ev).is_some_and(|n| super::events::table().matched.contains_key(&n)) => {
@@ -4625,6 +4632,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (_, "addEventListener" | "removeEventListener", [ev, ..]) if c.contains("PeptideAPI")
                     && super::events::named(self.o.runtime, ev).is_some_and(|n| !super::events::table().game.contains(&n)) => {
                     let n = super::events::named(self.o.runtime, ev).unwrap_or_default();
+                    // (one the source's game never raises either is never told there: as it is here)
+                    if !super::events::table().game_raised.contains(&n) {
+                        return Ok((format!("// (the source listens to the game for {n} here, which its game never raises)"), Ty::Any));
+                    }
                     self.gaps.insert(format!("listens to the game for {n}, which the game here never raises"));
                     return Ok((format!("// (the source listens to the game for {n} here, which the game here never raises)"), Ty::Any));
                 }
@@ -4740,6 +4751,20 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
                     let to = match (m.as_str(), args.first()) { ("gotoAndStop" | "gotoAndPlay", Some(f)) => self.expr(f)?.0, _ => "null".into() };
                     return Ok((format!("clipJump({who}, {to}, {hold})"), Ty::Any));
+                }
+                // (a named clip of another object's clip: the part it draws apart and publishes, `partOf`)
+                if let Expr::Call(g, a) = &**o {
+                    if a.is_empty() && matches!(&**g, Expr::Member(x, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip" | "getMC") && self.expr(x).is_ok_and(|(w, _)| w != "self")) {
+                        let Expr::Member(x, _) = &**g else { unreachable!() };
+                        let (who, _) = self.expr(x)?;
+                        self.util("partOf")?;
+                        let r = format!("partOf({who}, {})", quote(n));
+                        let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
+                        return Ok((match (m.as_str(), args.first()) {
+                            ("gotoAndStop" | "gotoAndPlay", Some(t)) => { let (t, _) = self.expr(t)?; format!("{{ var pt = {r}; if (pt != null) clipGo(pt, {t}, {hold}); }}") }
+                            _ => format!("{{ var pt = {r}; if (pt != null) clipPlay(pt, {}); }}", !hold),
+                        }, Ty::Any));
+                    }
                 }
                 // (a clip nested in an object's own clip, whose art is drawn whole into each of the
                 // object's frames: its playhead is drawn nowhere)
@@ -6133,7 +6158,7 @@ self.playFrameLabel({})", quote(f))); }
             }
             // (the source's engine picks a homing target in its own range and says so by its
             // `homingTarget` event; nothing here picks one, so there is none to head for)
-            ("getHomingTarget", []) => { self.gaps.insert("homes on a target the source's engine picks, which nothing here picks".into()); Ok(("null".into(), Ty::Body)) }
+            ("getHomingTarget", []) => { self.util("homingPick")?; Ok(("homingPick()".into(), Ty::Body)) }
             ("homeTowardsTarget", [sp, t]) => {
                 block(self, "home");
                 let (sp, _) = self.expr(sp)?;
@@ -6533,6 +6558,35 @@ self.playFrameLabel({})", quote(f))); }
             }
         }
         let name = super::events::named(self.o.runtime, ev).ok_or("listens for an event named as it runs")?;
+        // its homing target picked, a knock-out it is credited with, an attack of its cut off by
+        // another: told by the pick, the knock-out, the start (`homingPick`, `koPoint`, `attackCancel`)
+        // (a fighter's size status changed, on whichever fighter it listens: told by the change, `sizeStatus`)
+        if name == "charSizeChange" {
+            let h = self.handler(handler)?;
+            self.util("sizeStatus")?;
+            let f = if who == "self" && !self.o.fighter { "self.getRootOwner()".to_string() } else { who.to_string() };
+            return Ok((format!("sizeListen({f}, {h}, {})", m == "addEventListener"), Ty::Any));
+        }
+        // (a knock-out point of a fighter's, on whichever fighter it listens)
+        if name == "charKOPoint" {
+            let h = self.handler(handler)?;
+            self.util("koPoint")?;
+            let f = if who == "self" && !self.o.fighter { "self.getRootOwner()".to_string() } else { who.to_string() };
+            return Ok((if m == "addEventListener" { format!("koPointListen({f}, {h})") } else { format!("koPointUnlisten({f}, {h})") }, Ty::Any));
+        }
+        if who == "self" && matches!(name.as_str(), "homingTarget" | "charAttackCancelled") && (self.o.fighter || name == "homingTarget") {
+            let h = self.handler(handler)?;
+            let (util, list, listen) = match name.as_str() {
+                "homingTarget" => ("homingPick", "homingHeard", None),
+                _ => ("attackCancel", "attackCancelHeard", Some("attackCancelListen")),
+            };
+            self.util(util)?;
+            return Ok((match (m == "addEventListener", listen) {
+                (true, Some(l)) => format!("{l}({h})"),
+                (true, None) => format!("{list}.remove({h});\n{list}.push({h})"),
+                (false, _) => format!("{list}.remove({h})"),
+            }, Ty::Any));
+        }
         // an attack of its turned back on (`attackEnabled`): told by the turn (`allowAttack`)
         if name == "attackEnabled" && who == "self" && self.o.fighter {
             let h = self.handler(handler)?;
@@ -6623,6 +6677,10 @@ self.playFrameLabel({})", quote(f))); }
         let raised = table.engine.get(&name).or_else(|| table.state.get(&name));
         // (one neither this engine nor the native skeletons ever raise is heard by no one)
         if raised.is_none() && !ends && !self.o.runtime.files.values().any(|t| t.contains(&format!("\"{name}\""))) {
+            // (one the source's engine never raises either is never told there: as it is here)
+            if super::events::table().never_raised.contains(&name) {
+                return Ok((format!("// (it listens for the source's {name}, which its engine never raises)"), Ty::Any));
+            }
             self.gaps.insert(format!("listens for {name}, which nothing here raises"));
             return Ok((format!("// (it listens for the source's {name}, which nothing here raises)"), Ty::Any));
         }
