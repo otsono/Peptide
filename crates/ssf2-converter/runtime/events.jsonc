@@ -91,6 +91,8 @@
     "top":       { "code": "{arg}.data.structureType == StructureType.CEILING", "is": "bool" },
     // the attack an attack's event is of: its record (`attackEnabled` tells its name)
     "attackData": { "code": "{arg}.data.attackData", "is": "record" },
+    // the item an item's event is of (`gameItemCreated`, told by the item as it starts)
+    "item": { "code": "{arg}.data.item", "is": "object" },
     // the size status a fighter changed to (`sizeStatus`)
     "sizeStatus": { "code": "{arg}.data.sizeStatus", "is": "number" },
     // whether the fighter is metal now, as its turn tells (`metalOn`)
