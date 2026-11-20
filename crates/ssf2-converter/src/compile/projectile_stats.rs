@@ -96,11 +96,9 @@ impl ProjectileStats {
         let effect_of = |k: &str| names.get(k).filter(|n| !n.is_empty()).and_then(|n| effect(n));
         let states = |k: &str, c: &Code| if c.when.as_deref() == Some("effect") { effect_of(k).is_some() }
             else { stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v)) };
-        // (one its code writes as it flies is taken where the write only turns it off and on: its
-        // switch, and the switches of what it reads, which the write sets)
-        let switched = |k: &str, c: &Code| c.switch.is_some() || c.switches.contains_key(k);
-        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| states(k, c)
-            && (!written(k) || switched(k, c)) && !c.reads.iter().any(|r| written(r) && !switched(r, c))).collect();
+        // (one the declarations sharing its clip state differently is taken too, each value read as
+        // the declaration it was fired as states it, `shotStat`)
+        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| states(k, c)).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
         let mut out = Taken::default();
         // (one its stats state that its code's writes keep from being taken: said)
@@ -108,11 +106,18 @@ impl ProjectileStats {
             if c.yields_to.as_deref().is_some_and(|y| keys.contains(&y)) || c.same_as.as_deref().is_some_and(|y| keys.contains(&y)) { continue }
             out.untaken.push(format!("moves by its declared {k}, which its code or another declaration of its clip changes as it flies: not ported"));
         }
+        let named = crate::re!(r"\{([A-Za-z_]\w*)(?:\|(-?[0-9.]+))?\}");
         for (k, c) in taken {
             if c.yields_to.as_deref().is_some_and(|y| keys.contains(&y)) { continue }
             for line in &c.code {
                 let mut t = line.clone();
                 for (u, f) in units { t = t.replace(&format!("{{@{u}}}"), &super::attack_stats::num(*f)); }
+                if written(k) { t = t.replace("{v}", &format!("shotStat({}, {})", super::quote(k), super::attack_stats::num(stats.get(k).copied().unwrap_or(0.0)))); }
+                t = named.replace_all(&t, |m: &regex::Captures| {
+                    if !written(&m[1]) || !(c.reads.iter().any(|r| r == &m[1]) || &m[1] == k.as_str()) { return m[0].to_string() }
+                    let d = stats.get(&m[1]).map(|x| super::attack_stats::num(*x)).unwrap_or_else(|| m.get(2).map_or("0".to_string(), |d| d.as_str().to_string()));
+                    format!("shotStat({}, {d})", super::quote(&m[1]))
+                }).into_owned();
                 if let Some(e) = effect_of(k) { t = t.replace("{@effect}", &e); }
                 out.code.push(super::attack_stats::fill(&t, stats.get(k).copied().unwrap_or(0.0), stats));
             }

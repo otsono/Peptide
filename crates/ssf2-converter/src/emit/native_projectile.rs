@@ -170,6 +170,22 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     };
     let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
     let mut taken = compile::projectile_stats::table().rows(&stats, &stat_names, &effect, &|k| !agreed(k), &units_of);
+    // (a stat the declarations sharing its clip state differently: read as the one it was fired as
+    // states it, by the name its owner fires it under, `shotStat`)
+    if taken.code.iter().any(|l| l.contains("shotStat(")) {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        let re = crate::re!(r#"shotStat\("([A-Za-z_]\w*)""#);
+        for l in &taken.code { for c in re.captures_iter(l) { keys.insert(c[1].to_string()); } }
+        let mut cases = Vec::new();
+        for (n, d) in decls.projectiles.entries().iter().filter(|(n, d)| (entity.is_some() && spec.entities.get(n) == entity) || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str())) {
+            for k in &keys {
+                let v = match d.get(k) { Some(Value::Num(x)) => num(*x), Some(Value::Bool(b)) => if *b { "1".into() } else { "0".into() }, _ => continue };
+                cases.push(format!("\t\tcase {}: return {v};", compile::quote(&format!("{n}/{k}"))));
+            }
+        }
+        taken.code.push(format!("// the declaration it was fired as (its owner's launch names it), and a stat of that declaration's\nvar shotDecl = null;\nfunction shotStat(k, d) {{\n\tswitch (shotDecl + \"/\" + k) {{\n{}\n\t}}\n\treturn d;\n}}", cases.join("\n")));
+        taken.starts.insert(0, "shotDecl = (self.getOwner() != null && self.getOwner().exports != null && self.getOwner().exports.__launch != null) ? self.getOwner().exports.__launch.name : null;".into());
+    }
     for l in taken.code.iter_mut() { *l = l.replace("{@clip}", &compile::quote(&spec.clip)); }
     // (one only its code turns on starts off)
     for k in written_only.keys() {
