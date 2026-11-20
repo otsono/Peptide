@@ -117,6 +117,37 @@ function ownFloorOfClip(c, ?terrain) {
 	var v = c.vec;
 	return ownFloor(c.x + v.x0, c.y + v.y0, v.x1 - v.x0, v.y1 - v.y0, terrain);
 }
+// whether a fighter leaving its floor keeps the floor's speed: across, up, down (the source's
+// `setConserve...Momentum`), and the fighters on it as of the last frame, with where it was then
+var ownConserve = { h: false, u: false, d: false };
+var ownRiders = [];
+var ownWas = null;
+function ownConserveSet(k, on) {
+	if (k == "h") ownConserve.h = on == true; else if (k == "u") ownConserve.u = on == true; else ownConserve.d = on == true;
+}
+// each frame: a fighter that was on its floor and has left it for the air takes the floor's speed
+// as it was moving, each way it keeps
+function ownRidersFrame() {
+	var x = self.getX();
+	var y = self.getY();
+	var vx = ownWas == null ? 0.0 : x - ownWas[0];
+	var vy = ownWas == null ? 0.0 : y - ownWas[1];
+	ownWas = [x, y];
+	if (!(ownConserve.h || ownConserve.u || ownConserve.d) || ownFaces.length == 0) { ownRiders = []; return; }
+	var now = [];
+	for (c in match.getCharacters()) {
+		if (c == null || c.isDisposed()) continue;
+		var fl = c.getCurrentFloor();
+		for (f in ownFaces) if (fl == f.st) { now.push(c); break; }
+	}
+	for (c in ownRiders) {
+		if (now.indexOf(c) >= 0 || c.isOnFloor() || c.isDisposed()) continue;
+		var facing = c.isFacingRight() ? 1 : -1;
+		if (ownConserve.h) c.setXSpeed(c.getXSpeed() + facing * vx);
+		if ((ownConserve.u && vy < 0) || (ownConserve.d && vy > 0)) c.setYSpeed(c.getYSpeed() + vy);
+	}
+	ownRiders = now;
+}
 function dropOwnFloor() {
 	if (ownFaces.length == 0) return;
 	var faces = ownFaces;

@@ -174,11 +174,13 @@
   "stanceClip": { "code": "{self}", "returns": "object" },
   // (whether a projectile flies on through a wall or the floor it meets, and whether a platform
   // keeps a rider's speed: settings this engine's objects have none of)
-  "modifyContinueOnCrash": { "code": "", "gap": "sets whether it flies on through a wall it meets, which this engine's projectiles have no setting for" },
-  "modifyContinueOnGround": { "code": "", "gap": "sets whether it flies on along the floor it meets, which this engine's projectiles have no setting for" },
-  "setConserveHorizontalMomentum": { "code": "", "gap": "sets whether a rider keeps its speed across, which this engine's platforms have no setting for" },
-  "setConserveUpwardMomentum": { "code": "", "gap": "sets whether a rider keeps its speed up, which this engine's platforms have no setting for" },
-  "setConserveDownwardMomentum": { "code": "", "gap": "sets whether a rider keeps its speed down, which this engine's platforms have no setting for" },
+  // calls the source's projectiles have none of: they do nothing in its game, and nothing here
+  "modifyContinueOnCrash": "",
+  "modifyContinueOnGround": "",
+  // whether a fighter leaving its own floor keeps the floor's speed (`ownRidersFrame`)
+  "setConserveHorizontalMomentum": "ownConserveSet(\"h\", {0})",
+  "setConserveUpwardMomentum": "ownConserveSet(\"u\", {0})",
+  "setConserveDownwardMomentum": "ownConserveSet(\"d\", {0})",
   "swapDepths": "",
   "swapChildren": "",
   "getMidground": { "code": "stage", "returns": "object" },

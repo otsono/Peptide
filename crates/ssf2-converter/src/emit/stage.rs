@@ -875,7 +875,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     if body.is_some() { begin.push("placedBody();".into()) }
     let mut every = Vec::new();
     if body.is_some() { every.push("facesFollow(bodyFaces);".to_string()) }
-    if floors { every.push("facesFollow(ownFaces);".into()) }
+    if floors { every.push("facesFollow(ownFaces);".into()); every.push("ownRidersFrame();".into()) }
     if !rehit.is_empty() { every.push("rehitUpkeep();".into()) }
     every.extend(w.every_frame.iter().cloned());
     let mut end = Vec::new();

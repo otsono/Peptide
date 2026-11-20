@@ -361,6 +361,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let words = [("SIZE", num(units.size)), ("BODY", "null".to_string()), ("BODY_ON", "false".to_string()), ("FLOOR_ON", "true".to_string())];
         for b in ["faces", "own_floor"] { functions.push(native::helper(runtime, "object_rules", b, "", &words, &[])?); }
         update.push("facesFollow(ownFaces);".into());
+        update.push("ownRidersFrame();".into());
         ends_extra.push("dropOwnFloor();".into());
     }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
