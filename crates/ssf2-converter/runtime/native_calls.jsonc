@@ -391,7 +391,7 @@
   // a fighter's match record: this engine keeps its lives and damage, not the source's score
   "getMatchStatistics": { "code": "matchStats({self})", "helper": "matchStats", "returns": "record" },
   // a fighter's costume's colours by its name: no costume table here
-  "PeptideAPI.getCostumeData": { "code": "null", "returns": "record", "gap": "getCostumeData: a costume's colours by the fighter's name" },
+  "PeptideAPI.getCostumeData": { "code": "costumeOfName({0}{,1}{,2})", "helper": "costumeOfName", "returns": "record" },
   // an engine object (an effect it made) taken off the one it is in: gone (a record of a clip, drawn
   // nowhere, has nothing to take off)
   "removeChild": { "code": "{ var gone = {0}; if (gone != null && gone.destroy != null && (gone.isDisposed == null || !gone.isDisposed())) gone.destroy(); }" },

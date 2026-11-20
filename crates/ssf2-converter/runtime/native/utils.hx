@@ -2030,3 +2030,23 @@ function ejectFoes(c) {
 		f.addTimer(1, 26, function() { if (left > 0) { f.setXSpeed(-15 * SPEED); f.setYSpeed(0); left--; } }, { persistent: true });
 	}
 }
+
+// ---- costumeOfName
+//: needs declaredOf
+// a costume's colours by the fighter's name (`getCostumeData(name, team, costume)`): those the
+// fighter of that name in the match is drawn in, its costume shader's map as the source's palette
+// record (`colors`, `replacements`); none in the match, nothing
+function costumeOfName(name, ?team, ?costume) {
+	for (c in match.getCharacters()) {
+		if (c == null || declaredOf(c).statsName != name) continue;
+		var sh = c.getCostumeShader();
+		var m = sh == null ? null : sh.paletteMap;
+		if (m == null) return null;
+		var from = [];
+		var to = [];
+		for (k in m.keys()) { from.push(k); to.push(m.get(k)); }
+		var pal = { colors: from, replacements: to };
+		return { paletteSwap: pal, paletteSwapPA: pal };
+	}
+	return null;
+}
