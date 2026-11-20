@@ -417,8 +417,9 @@
   // a projectile another object fires (an item its holder swings): what that object publishes for
   // it, where it does; the game's own items fire nothing here
   "createProjectile": { "code": "({self} != null && {self}.exports != null && {self}.exports.__fire != null ? {self}.exports.__fire({0}) : null)", "returns": "object", "gap": "an item's own projectile, fired by its holder" },
-  // a clip's own frame code taken off: the clips its code makes by linkage are drawn nowhere here
-  "PeptideUtils.removeFrameScripts": { "code": "", "gap": "removeFrameScripts: a clip's own frame code taken off" },
+  // a clip's own frame code taken off: a clip record's (`clipRun`) runs no more of it; one drawn into
+  // its owner's art runs none here already
+  "PeptideUtils.removeFrameScripts": { "code": "{ var nc = {0}; if (nc != null && nc.labelList != null) nc.frames = null; }" },
   "PeptideAPI.addHUDDetection": { "code": "", "gap": "addHUDDetection: the HUD seeing what is behind it" },
   "PeptideAPI.removeHUDDetection": { "code": "", "gap": "removeHUDDetection: the HUD seeing what is behind it" },
   // a function run every so many milliseconds (the source's frames, at least one) until let go: an
