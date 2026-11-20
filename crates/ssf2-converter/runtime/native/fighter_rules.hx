@@ -1207,8 +1207,38 @@ function letOut(foe, spat) {
 	if (spat) { foe.setXSpeed(self.flipX(9) * SPEED); foe.setYSpeed(-4 * SPEED); }
 	else { foe.setYSpeed(-8 * SPEED); self.setXSpeed(self.flipX(-9) * SPEED); }
 }
+// the hat of the power it holds (its package's `hat_<power>`, HATS), worn where its animation's
+// hat box sits, the way it faces; none while it holds no power or the frame has no hat box
+var hatVfx = self.makeObject(null);
+var hatOf = self.makeObject(null);
+function hatFrame() {
+	var p = powerName();
+	var want = null;
+	if (p != null) { var n = ("hat_" + p).toLowerCase(); for (h in HATS) if (h[0] == n) want = h; }
+	var v = hatVfx.get();
+	if (v != null && (want == null || hatOf.get() != want[1] || v.isDisposed())) { if (!v.isDisposed()) v.destroy(); hatVfx.set(null); hatOf.set(null); v = null; }
+	if (want == null) return;
+	if (v == null) {
+		v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(want[1]), animation: want[2], loop: true, timeout: -1 }), self);
+		hatVfx.set(v);
+		hatOf.set(want[1]);
+		if (v == null) return;
+	}
+	var boxes = self.getCollisionBoxes(CollisionBoxType.CUSTOMA);
+	var b = boxes == null || boxes.length == 0 ? null : boxes[0];
+	if (b == null) { v.setVisible(false); return; }
+	var facing = self.isFacingRight() ? 1 : -1;
+	v.setX(self.getX() + facing * b.centerX);
+	v.setY(self.getY() + b.centerY);
+	if (facing < 0) v.faceLeft(); else v.faceRight();
+	// (sized with it, as the source sizes the hat with the fighter's clip)
+	v.setScaleX(self.getScaleX());
+	v.setScaleY(self.getScaleY());
+	v.setVisible(self.getVisible());
+}
 function powerFrame() {
 	borrowedFrame();
+	hatFrame();
 	if (power.get() != null) {
 		if (self.inState(CState.EMOTE)) { dropPower(); return; }
 		var d = self.getDamage();

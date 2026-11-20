@@ -55,6 +55,9 @@ pub enum BoxType {
     /// A box the source's own code tests against (`customBox`): it takes no hits, only the
     /// object's tests (`hitboxTest`) read it, here as the engine's custom box b
     CustomBox,
+    /// Where a copied power's hat sits (`hatBox`): it takes no hits, only the hat reads it, here as
+    /// the engine's custom box a
+    HatBox,
     /// Ledge grab box
     LedgeBox,
     /// Grab hold point (where grabbed opponent is held)
@@ -104,6 +107,8 @@ impl BoxType {
             Some(BoxType::GrabHoldBox)
         } else if lower.starts_with("custombox") {
             Some(BoxType::CustomBox)
+        } else if lower.starts_with("hatbox") {
+            Some(BoxType::HatBox)
         } else if lower.ends_with("box") {
             // generic fallback — treat unknown *box as hurtbox
             Some(BoxType::Hurtbox)
@@ -119,7 +124,7 @@ impl BoxType {
     /// must be collapsed into its axis-aligned bounding box with
     /// rotation = 0 before emission.
     pub fn supports_rotation(&self) -> bool {
-        matches!(self, BoxType::ItemBox | BoxType::CustomBox)
+        matches!(self, BoxType::ItemBox | BoxType::CustomBox | BoxType::HatBox)
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -134,6 +139,7 @@ impl BoxType {
             BoxType::CounterBox => "COUNTER_BOX",
             BoxType::InertBox => "INERT_BOX",
             BoxType::CustomBox => "CUSTOM_BOX",
+            BoxType::HatBox => "HAT_BOX",
             BoxType::LedgeBox  => "LEDGE_BOX",
             BoxType::GrabHoldBox => "GRAB_HOLD_BOX",
         }

@@ -6171,6 +6171,8 @@ self.playFrameLabel({})", quote(f))); }
             // (the source's engine picks a homing target in its own range and says so by its
             // `homingTarget` event; nothing here picks one, so there is none to head for)
             ("getHomingTarget", []) => { self.util("homingPick")?; Ok(("homingPick()".into(), Ty::Body)) }
+            // the hat of the power it holds (`hatFrame`), where it takes powers
+            ("copyHatClip", []) if takes_power(self.o.model, self.o.runtime) => { self.copy_power()?; Ok(("hatVfx.get()".into(), Ty::Object)) }
             ("homeTowardsTarget", [sp, t]) => {
                 block(self, "home");
                 let (sp, _) = self.expr(sp)?;

@@ -323,7 +323,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
                 vec![("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed)), ("COPY_MOVES", format!("[{moves}]")),
                      ("SWALLOW", q(m.as_ref().map(|m| &m.swallow))), ("SPIT", q(m.as_ref().and_then(|m| m.spit.as_ref()))),
                      ("SUCKING", q(m.as_ref().and_then(|m| m.sucking.as_ref()))), ("POWER_FIELD", q(m.as_ref().map(|m| &m.field))),
-                     ("STRIKE_FRAMES", strike_frames(&char_dir.join(format!("library/entities/{char_pascal}.entity"))))]
+                     ("STRIKE_FRAMES", strike_frames(&char_dir.join(format!("library/entities/{char_pascal}.entity")))),
+                     // (the hats its package carries for the powers it takes, `hat_<power>`: by the
+                     // name in lower case, the effect, its first animation)
+                     ("HATS", format!("[{}]", f.effects.iter().filter(|(n, ps)| n.to_lowercase().starts_with("hat_") && !ps.is_empty())
+                        .map(|(n, ps)| format!("[{}, {}, {}]", compile::quote(&n.to_lowercase()), compile::quote(n), compile::quote(&ps[0].fm_name))).collect::<Vec<_>>().join(", ")))]
             }
             "home" => vec![("SPEED", num(f.units.speed))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
