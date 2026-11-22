@@ -168,9 +168,9 @@ skipped.
 
 OPTIONS:
   -o, --output <DIR>          Output directory          [default: ./characters]
-  -n, --name <NAME>           Character-name override; for a multi-character
-                              .ssf, selects only that character (auto-detected
-                              from the SWF otherwise)
+  -n, --name <NAME>           which fighter to convert, for a package that
+                              declares several (matched ignoring case and
+                              spaces; converts every declared one otherwise)
       --misc-ssf <FILE>       misc.ssf for costume palettes (auto-detected next
                               to the input file otherwise)
       --game <PATH>           the installed SSF2 (app or data folder): its shared

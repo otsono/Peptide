@@ -150,7 +150,20 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
 
     // Determine which character names to process
     let char_names: Vec<String> = if let Some(name) = opts.name.clone() {
-        vec![name]
+        // the name picks one of the fighters the package declares, so it is read against them:
+        // "Kung Fu Man" finds `kungfuman`, and a one-fighter package (a mod built on another
+        // fighter's slot keeps that fighter's id) converts its fighter whatever the name says
+        let declared = detect_char_names(&swf, &opts.input);
+        let key = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        match declared.iter().find(|d| key(d) == key(&name)) {
+            Some(id) => vec![id.clone()],
+            None if declared.len() == 1 => {
+                log::warn!("{name:?} is not a fighter this package declares; converting the one it does, {:?}", declared[0]);
+                vec![declared[0].clone()]
+            }
+            None if declared.is_empty() => vec![name],
+            None => anyhow::bail!("{name:?} is not a fighter this package declares; it declares {}", declared.join(", ")),
+        }
     } else {
         let detected = detect_char_names(&swf, &opts.input);
         if detected.is_empty() {
@@ -873,7 +886,8 @@ fn process_character(
 
     let char_output_dir = match multi_char_slot {
         Some(s) => s.project_dir.clone(),
-        None => output.join(char_name),
+        // the same folder the project's scripts are written into (`haxe_gen`)
+        None => output.join(char_name.to_lowercase().replace(' ', "")),
     };
     // Clean the generated `library/` subtree before (re)writing, so a file that a
     // prior conversion produced but this one no longer does (e.g. an old
