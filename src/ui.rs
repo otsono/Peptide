@@ -232,7 +232,7 @@ pub fn patch_and_launch_with_progress(
     // char (e.g. commandervideo) has no custom/<c>.fra — the engine already has it, and the `s`
     // handler's base-char skip resolves it via public::. So only error if it looks custom but is
     // missing; for an absent file we warn and continue (the base-char path handles it).
-    if let Some(c) = bake_char {
+    for c in bake_char.into_iter().flat_map(|r| r.split(',')) {
         // Informational only: the patcher (connect_edit) self-detects base-vs-custom by stat'ing
         // custom/<c>/<c>.fra itself, so there's no flag to pass — we just warn if it looks absent.
         let fra = fray_dir.join("custom").join(c).join(format!("{c}.fra"));

@@ -120,13 +120,27 @@ function throwFromHolder() {
 	var speed = TOSS_SPEED * (attack == "a_forwardsmash" || attack == "a_up" || attack == "a_down" ? by[1] : by[0]);
 	var way = angle == 90 ? "up" : angle == 270 ? "down" : angle == TOSS_ANGLE ? "forward" : "back";
 	var stance = (who.isOnFloor() ? "item_throw_" : "item_throw_air_") + way;
-	if (!who.hasAnimation(stance)) { leaveHand(who, angle, speed); return; }
+	// (a fighter with no throw stance of its own, one of the engine's own: the press's attack is
+	// the throw, so the item takes it over, standing the fighter or letting it fall, and leaves)
+	if (!who.hasAnimation(stance)) { standDown(who); standing.set(STAND_FRAMES); standingWho.set(who); leaveHand(who, angle, speed); return; }
 	throwing.set(true);
 	who.playAnimation(stance);
 	self.addTimer(TOSS_FRAME + 1, 1, function() {
 		throwing.set(false);
 		if (inItemState(1) && holder.get() == who) leaveHand(who, angle, speed);
 	}, { persistent: true });
+}
+// (the frame an attack starts, the engine keeps it over a state another object puts its fighter
+// in: the item stands its thrower down for this many frames after)
+var STAND_FRAMES = 3;
+var standing = self.makeInt(0);
+var standingWho = self.makeObject(null);
+// the attack a press started, taken over by the item: the fighter stands, or falls, as it was
+function standDown(who) {
+	if (who == null || who.isDisposed() || !(who.inStateGroup(CStateGroup.ATTACK) || who.inState(CState.GRAB))) return;
+	who.toState(who.isOnFloor() ? CState.STAND : CState.FALL);
+	// (and the press it took over is spent: the engine's buffer would start the attack again)
+	who.clearInputBuffer();
 }
 function leaveHand(who, angle, speed) {
 	var a = angle * Math.PI / 180;
@@ -246,6 +260,8 @@ function takeUpFrame(who) {
 		who.toState(CState.EMOTE);
 		who.playAnimation("item_pickup");
 	}
+	// (one with no pickup stance of its own: the press's attack was the pickup, taken over)
+	if (left > 0 && !who.hasAnimation("item_pickup")) standDown(who);
 	var taking = left > 0 || who.getAnimation() == "item_pickup";
 	self.exports.__takingUp = taking;
 	if (taking) holderAttack.set(attackOf(who));
@@ -257,7 +273,8 @@ function takeUpFrame(who) {
 function canTake(c) {
 	if (!c.isOnFloor()) return false;
 	if (c.exports != null && c.exports.__heldItem != null && !c.exports.__heldItem.isDisposed()) return false;
-	if (c.inStateGroup(CStateGroup.ATTACK)) return c.getCurrentFrame() <= 1;
+	// (a grab press is the same press: the engine starts its grab before the item hears it)
+	if (c.inStateGroup(CStateGroup.ATTACK) || c.inState(CState.GRAB)) return c.getCurrentFrame() <= 1;
 	return !c.inState(CState.SHIELD_IN) && !c.inState(CState.SHIELD_LOOP) && !c.inState(CState.SHIELD_OUT)
 		&& !c.inState(CState.GRAB) && !c.inState(CState.GRAB_HOLD) && !c.inState(CState.LEDGE_LOOP) && !c.inState(CState.LEDGE_IN);
 }
@@ -349,6 +366,7 @@ function update() {
 	// (one its first frame's code ended runs nothing more: a capsule made inside another ends
 	// itself there, and its floor touch would open it)
 	if (inItemState(3)) return;
+	if (standing.get() > 0) { standing.set(standing.get() - 1); standDown(standingWho.get()); }
 	handleItem();
 	if (!inItemState(1) && self.isOnFloor()) self.setXSpeed(self.getXSpeed() * SLIDE_KEEP);
 	cameToRest();

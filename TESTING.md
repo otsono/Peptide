@@ -419,7 +419,9 @@ shut the engine down.
   `dangerouslyDisableSandbox` (the engine's window).
   - `--full` = Title/UGC bridge boot, then drive it with `tell "spawn <id>"` once READY (the
     reliable path; avoids the headless filtered-load crash).
-  - `--char <id>` = headless fast-boot baking that character.
+  - `--char <id>` = headless fast-boot baking that character. `--char a,b` is a roster, and it may
+    mix built-in and converted fighters (`--char commandervideo,sandbag`: a stock fighter trying a
+    converted fighter's items).
   - `--no-boot --port N --token T` = attach to an engine launched elsewhere.
 - **`tell`** appends one command to the session's control file; the daemon picks it up within
   ~50ms, translates it, and sends it. commands are the same friendly vocabulary as everywhere

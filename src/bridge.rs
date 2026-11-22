@@ -724,13 +724,14 @@ Drive it with `peptide tell \"<cmd>\"`, watch it with `peptide log`.");
     } else {
         let full = args.iter().any(|a| a == "--full");
         // `--char` may carry a comma-separated roster (e.g. `mario,mario`) so the auto-boot builds
-        // a multi-player match directly; the patcher bakes only player 1 (first token), the rest
-        // resolve at launch from the full roster the fastboot command carries.
+        // a multi-player match directly; the patcher bakes player 1 (first token) and is told the
+        // whole roster, so it knows which of the rest are built-in, and the rest resolve at launch
+        // from the full roster the fastboot command carries.
         let bake: Option<String> = if full {
             None
         } else {
             let roster = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
-            Some(roster.split(',').next().unwrap_or(&roster).trim().to_string())
+            Some(roster.split(',').map(str::trim).collect::<Vec<_>>().join(","))
         };
         autostart = bake.is_some();
         // `--stage` bakes a stage the same way `--char` bakes a character, which is what

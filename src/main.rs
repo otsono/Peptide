@@ -1218,7 +1218,13 @@ fn connect_edit(
     // thespire (a real loadable stage), assist → commandervideoassist. All generic —
     // derived from the injector args; these are just the fallbacks. (Was impostor, but
     // impostor crashes the game on match load — see the open TODO.)
-    let cname = char_name.as_deref().unwrap_or("commandervideo");
+    // the char may be a roster (`a,b`): player 1 is baked, and every fighter in it is known
+    // here so a built-in one is spared from the boot filter and only a custom one is loaded by
+    // its path (a roster mixing the two is how a converted item is tried on a stock fighter)
+    let roster: Vec<String> = char_name.as_deref().unwrap_or("commandervideo").split(',')
+        .map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+    let cname = roster.first().map(String::as_str).unwrap_or("commandervideo");
+    let is_custom = |c: &str| std::path::Path::new(&format!("{install_dir}/custom/{c}/{c}.fra")).exists();
     let sname = stage_name.as_deref().unwrap_or("thespire");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
@@ -3158,7 +3164,9 @@ fn connect_edit(
         // custom/<name>/<name>.fra path, which does not exist for a base-roster fighter, and the
         // resource it hands back is null by the time finishLoading preloads it. base content is
         // already loaded by the ordinary boot this session does anyway.
-        if char_is_custom {
+        // (per player: the baked roster says which of its fighters are custom; a player the
+        // bake did not name goes by player 1's kind, as every extra used to)
+        if roster.get(j + 1).map_or(char_is_custom, |c| is_custom(c)) {
             emit_load_char(&mut ops, 55);
         }
         // re-fetch the name (emit_load_char scratched rr55/rr31/rr39), then resolve it -> rr26
@@ -5515,9 +5523,9 @@ fn connect_edit(
         // A base-roster fighter no longer costs the whole filter: its own resource is spared by
         // name and every other public:: one is still skipped, so a built-in character boots at
         // the same speed a custom one does.
-        let keep = (!char_is_custom).then(|| format!("public::{}", char_name.as_deref().unwrap_or_default()));
-        inject_required_filter(code, keep.as_deref())?;
-        if let Some(k) = &keep {
+        let keep: Vec<String> = roster.iter().filter(|c| !is_custom(c)).map(|c| format!("public::{c}")).collect();
+        inject_required_filter(code, &keep)?;
+        for k in &keep {
             eprintln!("connect_edit: base-roster character, sparing {k} from the required-resource filter");
         }
     }
@@ -5859,7 +5867,7 @@ fn inject_frame_telemetry(
 /// not-required, op121 loop-back); we adjust exactly those by ±N. All build-specific op
 /// indices are asserted before patching so a layout change fails loudly instead of
 /// silently corrupting control flow.
-fn inject_required_filter(code: &mut Bytecode, keep: Option<&str>) -> anyhow::Result<()> {
+fn inject_required_filter(code: &mut Bytecode, keep: &[String]) -> anyhow::Result<()> {
     use hlbc::types::{RefFun, RefGlobal, RefInt};
     let getfqid = require_fn(code, "getFullyQualifiedResourceId", Some("pxf.io.AbstractResource"))?;
     let indexof = require_fn(code, "indexOf", Some("String"))?;
@@ -5886,18 +5894,20 @@ fn inject_required_filter(code: &mut Bytecode, keep: Option<&str>) -> anyhow::Re
     // ONE public:: resource may be spared: the base-roster fighter the launch actually names.
     // Without this a base fighter has to give up the whole filter -- the boot then loads every
     // built-in character's renders to get the one it wants, which is the slow boot back again.
-    let keep_g = keep.map(|k| add_string_const(code, k));
+    let keep_g: Vec<usize> = keep.iter().map(|k| add_string_const(code, k)).collect();
     let mut filt = vec![
         Opcode::Call1 { dst: Reg(13), fun: RefFun(getfqid), arg0: Reg(9) },                          // 22: fqid (reg9 = loop resource)
     ];
-    if let Some(kg) = keep_g {
-        // starts with the kept id -> jump PAST the public:: skip, so it is queued as normal
+    for (i, &kg) in keep_g.iter().enumerate() {
+        // starts with a kept id -> jump PAST the rest of the kept checks and the public:: skip,
+        // so it is queued as normal
+        let past = (keep_g.len() - 1 - i) as i32 * 5 + 5;
         filt.extend([
             Opcode::GetGlobal { dst: r_str, global: RefGlobal(kg) },
             Opcode::Null { dst: r_null },
             Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null },
             Opcode::Int { dst: r_zero, ptr: RefInt(zero_c) },
-            Opcode::JEq { a: r_idx, b: r_zero, offset: 5 },   // past the four public:: ops + its JEq
+            Opcode::JEq { a: r_idx, b: r_zero, offset: past },
         ]);
     }
     filt.extend([
