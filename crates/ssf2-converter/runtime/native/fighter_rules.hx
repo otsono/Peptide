@@ -1298,8 +1298,8 @@ function powerFrame() {
 // anywhere, still lends it its move
 function powerOf(foe) {
 	var p = foe.exports == null ? null : foe.exports.__kirbyPower;
-	var rec = { id: null, fire: null, effect: null, inner: null, item: null, body: null };
-	if (p != null) { rec.id = p.id; rec.fire = p.fire; rec.effect = p.effect; rec.inner = p.inner; rec.item = p.item; }
+	var rec = { id: null, fire: null, effect: null, inner: null, item: null, body: null, pose: null };
+	if (p != null) { rec.id = p.id; rec.fire = p.fire; rec.effect = p.effect; rec.inner = p.inner; rec.item = p.item; rec.pose = p.pose; }
 	if (rec.id == null) rec.id = foe.getGameObjectStat("spriteContent");
 	var ground = rehearse(foe, "special_neutral");
 	var air = rehearse(foe, "special_neutral_air");
@@ -1387,6 +1387,18 @@ function rehearsedShots(foe, known) {
 // is hit where it is) and shows one of its own standard poses over the move's length: shooting when
 // the move makes projectiles, else a tilt (an aerial in the air) toward where its hitboxes reach.
 // the pose is drawn, not played, so the pose's own hitboxes and code stay out of it
+// how a power's move is drawn in its own art, scripted: a row per what the move does (makes
+// projectiles, or reaches up, ahead or down with its hitboxes), with its pose on the floor and in the
+// air. a pose is one of its own animations by name, stretched over the move so it lands its blow
+// where the move lands its own, or a list of pieces of them shown as written (`runtime/native/
+// utils.hx` `poses`), e.g. `[["tilt_forward", 1, 4], ["aerial_forward", 6, 12]]`. a power whose
+// record brings a row of its own (`__kirbyPower.pose`: `{ floor, air }`) is drawn by that one
+var POWER_POSES = {
+	shoot: { floor: "item_shoot", air: "item_throw_air_forward" },
+	up: { floor: "tilt_up", air: "aerial_up" },
+	forward: { floor: "tilt_forward", air: "aerial_forward" },
+	down: { floor: "tilt_down", air: "aerial_down" }
+};
 var borrowed = self.makeObject(null);
 var borrowedAt = self.makeInt(0);
 var borrowedHit = self.makeObject(null);
@@ -1403,7 +1415,7 @@ function borrowedMove(label) {
 	var frames = move == null ? [] : move.frames;
 	var lands = -1;
 	for (i in 0...frames.length) if (lands < 0 && (frames[i].hits.length > 0 || frames[i].shots.length > 0)) lands = i;
-	borrowed.set({ frames: frames, pose: move == null ? null : borrowedPose(move, floor), lands: lands, code: p.body.code, start: start, art: p.body.art });
+	borrowed.set({ frames: frames, pose: move == null ? null : borrowedPose(move, floor, p.pose), lands: lands, code: p.body.code, start: start, art: p.body.art });
 	borrowedAt.set(0);
 	borrowedHit.set([]);
 	self.toState(CState.SPECIAL_NEUTRAL, floor ? "stand" : "fall_loop");
@@ -1411,21 +1423,23 @@ function borrowedMove(label) {
 	if (start != null) { start(self); borrowedDraw(borrowed.get(), 0); }
 	return true;
 }
-// the pose of its own that fits the move: what the move does, read off its recording
-function borrowedPose(move, floor) {
+// the pose of its own that fits the move: what the move does, read off its recording, looked up in
+// its row of POWER_POSES (or the power's own row, `own`)
+function borrowedPose(move, floor, own) {
 	var shoots = false; var dx = 0.0; var dy = 0.0; var n = 0;
 	for (f in move.frames) {
 		if (f.shots.length > 0) shoots = true;
 		for (h in f.hits) { dx += h.x + h.w / 2; dy += h.y + h.h / 2 - move.mid; n++; }
 	}
-	var pose = null;
-	if (shoots) pose = floor ? "item_shoot" : "item_throw_air_forward";
+	var row = null;
+	if (shoots) row = POWER_POSES.shoot;
 	else if (n > 0) {
 		dx /= n; dy /= n;
-		var way = dy < -Math.abs(dx) ? "up" : (dy > Math.abs(dx) ? "down" : "forward");
-		pose = (floor ? "tilt_" : "aerial_") + way;
+		row = dy < -Math.abs(dx) ? POWER_POSES.up : (dy > Math.abs(dx) ? POWER_POSES.down : POWER_POSES.forward);
 	}
-	return pose != null && self.hasAnimation(pose) ? pose : null;
+	if (own != null) row = own;
+	var pose = row == null ? null : (floor ? row.floor : row.air);
+	return hasPose(self, pose) ? pose : null;
 }
 function borrowedFrame() {
 	var b = borrowed.get();
@@ -1516,12 +1530,16 @@ function borrowedDraw(b, t) {
 		borrowedArt = Sprite.create(self.getGameObjectStat("spriteContent"));
 		self.getTopLayer().addChild(borrowedArt);
 	}
+	// (a pose of pieces is shown as written, held on its last past them)
+	var pieces = !Std.isOfType(b.pose, String);
+	var at = pieces ? poseAt(b.pose, 0, t) : { anim: b.pose, frame: 1 };
 	// (its colours go on after its animation: showing another animation drops them)
-	if (borrowedArt.currentAnimation != b.pose) {
-		borrowedArt.currentAnimation = b.pose;
+	if (borrowedArt.currentAnimation != at.anim) {
+		borrowedArt.currentAnimation = at.anim;
 		var shader = self.getCostumeShader();
 		if (shader != null) borrowedArt.setPalette(shader.paletteMap);
 	}
+	if (pieces) { borrowedArt.currentFrame = Std.int(Math.max(1, Math.min(at.frame, borrowedArt.totalFrames))); self.getSprite().visible = false; return; }
 	var all = borrowedArt.totalFrames;
 	var strike = null;
 	for (p in strikeFrames) if (p[0] == b.pose) strike = p[1];

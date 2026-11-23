@@ -314,6 +314,8 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let parts = if wrote { crate::emit::object_parts(entity_key) } else { Vec::new() };
     // (the clips with code of their own nested in its art: their records, `nestedOn`)
     if wrote && !nested.is_empty() { functions.push(native::helper(runtime, "utils", "nestedClips", "nestedClips", &[], &[])?); }
+    // (an item draws its poses over the fighters it takes over, `poses`)
+    if item { functions.push(native::helper(runtime, "utils", "poses", "", &[], &[])?); }
     if !taken.code.is_empty() {
         functions.push(format!("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n{}", taken.code.join("\n")));
     }

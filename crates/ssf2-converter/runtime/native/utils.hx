@@ -1,6 +1,52 @@
 // The API's helpers (`SSF2Utils`) as plain functions: a native object's code that calls one gets
 // its block (compile/native.rs), under the API's own name.
 
+// ---- poses
+// a pose drawn over a fighter in place of an animation it plays (an item's pose for a fighter with
+// no stance of its own, a power's move done in its own art): one of its animations by name, from
+// its first frame at its own speed, or a list of pieces of them shown one after another, each
+// `[animation, from, to]` (its frames `from` to `to`, one an engine frame; `to` before `from` plays
+// it backwards) or `[animation, from, to, each]` (each frame held `each` engine frames)
+// the pieces a pose is (one animation by name is one piece of it from frame 1, `frames` long)
+function posePieces(pose, frames) {
+	if (Std.isOfType(pose, String)) return [[pose, 1, frames]];
+	return pose;
+}
+// how many engine frames a piece shows
+function pieceLength(p) {
+	var each = p.length > 3 ? p[3] : 1;
+	return (Std.int(Math.abs(p[2] - p[1])) + 1) * each;
+}
+// how many engine frames a pose shows: an animation by name `frames`, a list at least as long as
+// its pieces add up to
+function poseLength(pose, frames) {
+	if (Std.isOfType(pose, String)) return frames;
+	var n = 0;
+	for (p in posePieces(pose, frames)) n += pieceLength(p);
+	return Std.int(Math.max(n, frames));
+}
+// whether a fighter has every animation a pose shows
+function hasPose(who, pose) {
+	if (pose == null) return false;
+	for (p in posePieces(pose, 1)) if (!who.hasAnimation(p[0])) return false;
+	return true;
+}
+// the animation and frame a pose shows on its engine frame `t` (past its pieces, the last)
+function poseAt(pose, frames, t) {
+	var pieces = posePieces(pose, frames);
+	for (p in pieces) {
+		var n = pieceLength(p);
+		if (t < n) {
+			var each = p.length > 3 ? p[3] : 1;
+			var step = Std.int(t / each);
+			return { anim: p[0], frame: p[2] >= p[1] ? p[1] + step : p[1] - step };
+		}
+		t -= n;
+	}
+	var last = pieces[pieces.length - 1];
+	return { anim: last[0], frame: last[2] };
+}
+
 // ---- decel
 // a speed eased toward rest: a non-negative rate scales it, a negative one takes that much off its
 // size; it never crosses zero, and under half a pixel it is at rest
