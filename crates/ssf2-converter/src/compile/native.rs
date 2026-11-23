@@ -6073,10 +6073,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // an attack it starts by name: the engine's state for it, on the animation that shows it
             ("startAttack" | "forceAttack", [Expr::Str(label), rest @ ..]) => {
-                // (one no animation shows has no frames to start: the source's start finds none either)
+                // (one no animation shows has no frames to start: the source's start goes to a label its
+                // clip does not have, which stops the code it is in there, so this code stops there too)
                 let Some(anim) = (self.o.root_anim)(label) else {
-                    self.gaps.insert(format!("starts the attack {label}, which no animation of its shows"));
-                    return Ok((format!("// (it starts the attack {label}, which no animation of its shows)"), Ty::Any));
+                    return Ok((format!("return /* the attack {label}: no animation of its shows it, and the source's code stops at it */"), Ty::Any));
                 };
                 block(self, "start_attack");
                 let mut t = format!("startAttack({})", quote(&anim));
