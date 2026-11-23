@@ -58,10 +58,14 @@ var HEIGHT_UP = HEIGHT * SIZE;
 //   frames  how many engine frames it is held in `anim` before it stands (or falls) again
 //   locked  whether nothing it presses breaks it out (a hit still does, and lets the item go)
 //   leave   (a throw) the engine frame of `anim` the item leaves the hand on; 0 is at once
+// a throw has a row for each way it goes (`toss_forward`, `toss_back`, `toss_up`, `toss_down`).
 // a row's anim runs only where the fighter has none of its own: one with `item_pickup` plays that.
 var HIJACK = {
 	pickup: { sound: "pickup", anim: "crouch_out", frames: 4, locked: true },
-	toss: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
+	toss_forward: { sound: null, anim: "grab", frames: 20, locked: true, leave: 6 },
+	toss_back: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
+	toss_up: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
+	toss_down: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
 	drop: { sound: "itemdrop", anim: null, frames: 0, locked: false }
 };
 // the fighter it holds in a row's anim, the row, and the engine frames of it left
@@ -190,15 +194,16 @@ function throwFromHolder() {
 	// (a fighter with no throw stance of its own, one of the engine's own: the press's attack is
 	// the throw, so the item takes it over, standing the fighter or letting it fall, and leaves)
 	// (its toss row, where it scripts one, plays in place of the throw stance it lacks)
-	var scripted = hijack(who, HIJACK.toss, stance);
-	if (!who.hasAnimation(stance) && !(scripted && HIJACK.toss.leave > 0)) {
+	var row = way == "up" ? HIJACK.toss_up : way == "down" ? HIJACK.toss_down : way == "back" ? HIJACK.toss_back : HIJACK.toss_forward;
+	var scripted = hijack(who, row, stance);
+	if (!who.hasAnimation(stance) && !(scripted && row.leave > 0)) {
 		if (!scripted) { standDown(who); standing.set(STAND_FRAMES); standingWho.set(who); }
 		leaveHand(who, angle, speed);
 		return;
 	}
 	throwing.set(true);
 	if (!scripted) who.playAnimation(stance);
-	self.addTimer(scripted ? HIJACK.toss.leave : TOSS_FRAME + 1, 1, function() {
+	self.addTimer(scripted ? row.leave : TOSS_FRAME + 1, 1, function() {
 		throwing.set(false);
 		if (inItemState(1) && holder.get() == who) leaveHand(who, angle, speed);
 	}, { persistent: true });
