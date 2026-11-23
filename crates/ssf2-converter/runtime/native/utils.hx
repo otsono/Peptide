@@ -147,11 +147,19 @@ function textSlice(text, start, ?end) {
 	var b = end == null ? n : (end < 0 ? Std.int(Math.max(0, n + end)) : Std.int(Math.min(end, n)));
 	return b > a ? text.substring(a, b) : "";
 }
-// (a text joined to another, or a list to another list)
-function anyConcat(v, x) {
+// (a text joined to what it is given, or a list made of it and what it is given, as Flash's `concat`
+// makes one: a list given has its values put on the end one by one, anything else is put on whole,
+// and given nothing it is a copy. a list is the value with a `push`, the one test that is safe on
+// every kind of value here)
+function anyConcat(v, ?a, ?b, ?c) {
 	if (v == null) return null;
-	if (Std.isOfType(v, String)) return v + (x == null ? "null" : Std.string(x));
-	return v.concat(x);
+	if (Std.isOfType(v, String)) { var s = v; for (p in [a, b, c]) if (p != null) s += Std.string(p); return s; }
+	var out = v.copy();
+	for (p in [a, b, c]) {
+		if (p == null) continue;
+		if (p.push != null) { for (e in p) out.push(e); } else out.push(p);
+	}
+	return out;
 }
 // (a value of no known kind: a text cut the same way, a list by its own slice)
 function anySlice(v, start, ?end) {
@@ -2247,7 +2255,7 @@ function sizeRec(c) {
 	match.globals.__sizes.push(r);
 	return r;
 }
-function sizeOf(c) { return c == null ? 0 : sizeRec(c).status; }
+function sizeStatusOf(c) { return c == null ? 0 : sizeRec(c).status; }
 function sizeSet(c, s) {
 	if (c == null || c.isDisposed()) return;
 	var r = sizeRec(c);

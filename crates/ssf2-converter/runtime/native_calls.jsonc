@@ -252,7 +252,7 @@
   "split": { "code": "{self}.split({0})", "returns": "object" },
   "join": { "code": "joinedList({self}{,0})", "helper": "joinedList", "returns": "string" },
   // (a text joined to another, a list to another list: whichever it is as it runs)
-  "concat": { "code": "anyConcat({self}, {0})", "helper": "textSlice", "returns": "object" },
+  "concat": { "code": "anyConcat({self}{,0}{,1}{,2})", "helper": "textSlice", "returns": "object" },
   "lastIndexOf": { "code": "{self}.lastIndexOf({0})", "returns": "number" },
   "charAt": { "code": "{self}.charAt({0})", "returns": "string" },
   "charCodeAt": { "code": "{self}.charCodeAt({0})", "returns": "number" },
@@ -676,7 +676,7 @@
   "initialize": "null",
   "update": "null",
   // its size status, as its code sets it (`sizeStatus`)
-  "getSizeStatus": { "code": "sizeOf({self})", "helper": "sizeStatus", "returns": "number" },
+  "getSizeStatus": { "code": "sizeStatusOf({self})", "helper": "sizeStatus", "returns": "number" },
   "setSizeStatus": { "code": "sizeSet({self}, {0})", "helper": "sizeStatus" },
   // a fighter shut in a barrel: out of its own control (the engine's disabled state) until the
   // stage's code lets it go; the stage holds it, hides it and moves it itself
