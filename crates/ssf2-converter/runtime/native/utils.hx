@@ -668,6 +668,22 @@ function floorOwner(c) {
 	return null;
 }
 
+// ---- screenLook
+// a blend mode its code sets on a part or an effect: this engine draws with none, so a screen or
+// add is drawn from the conversion's copy of its art carrying the colour in the alpha
+// (`<animation>_screen`), switched to at the frame it is on; any other blend switches back
+function screenLook(v, on) {
+	if (v == null || v.isDisposed == null || v.isDisposed()) return;
+	var a = v.getAnimation();
+	if (a == null) return;
+	var plain = a.length > 7 && a.substr(a.length - 7) == "_screen" ? a.substr(0, a.length - 7) : a;
+	var want = on ? plain + "_screen" : plain;
+	if (want == a || !v.hasAnimation(want)) return;
+	var f = v.getCurrentFrame();
+	v.playAnimation(want);
+	v.playFrame(f);
+}
+
 // ---- drawOrderParent
 // the clip an object's clip is drawn in, as its code reads and moves it for drawing order: the
 // match's objects back to front, kept in the match's globals (the fighters, then the objects and

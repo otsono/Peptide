@@ -1988,11 +1988,22 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return self.assign(p, &Expr::New(Box::new(Expr::Name("TextMap".into())), vec![]));
             }
         }
-        // (a blend mode set on a clip or an effect: this engine draws with none of its own as it runs)
-        if let Place::Member(_, f) = p {
+        // (a blend mode set on a part or an effect: a screen or add draws the conversion's copy of its
+        // art that carries the colour in its alpha, any other the art itself, `screenLook`)
+        if let Place::Member(o, f) = p {
             if f == "blendMode" {
-                self.gaps.insert("sets a blend mode, which this engine has none of as it runs".into());
-                return Ok(vec!["// (not ported: a blend mode set here; this engine has none as it runs)".into()]);
+                let mode = match v { Expr::Member(c, m) if matches!(&**c, Expr::Name(c) if short(c) == "BlendMode") => Some(m.as_str()), Expr::Str(m) => Some(m.as_str()), _ => None };
+                let on = match mode.map(|m| m.to_ascii_uppercase()) {
+                    Some(m) if m == "SCREEN" || m == "ADD" => true,
+                    Some(m) if m == "NORMAL" || m == "LAYER" => false,
+                    _ => {
+                        self.gaps.insert("sets a blend mode, which this engine has none of as it runs".into());
+                        return Ok(vec!["// (not ported: a blend mode set here; this engine has none as it runs)".into()]);
+                    }
+                };
+                let target = match self.part_of(o) { Some(name) => format!("partNow({})", part_id(&name)), None => self.expr(o)?.0 };
+                self.util("screenLook")?;
+                return Ok(vec![format!("screenLook({target}, {on});")]);
             }
         }
         // (a constant of its class written the value it declares: nothing changes)

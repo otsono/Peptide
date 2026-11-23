@@ -1411,6 +1411,22 @@ fn process_character(
             let art = if parts.iter().any(|p| p.anim == art && p.image_guids.is_empty()) { String::new() } else { art };
             placements.push(crate::entity_gen::PartPlacement { name: name.clone(), fm_anim: fm.clone(), art, matrix: child.matrix });
         }
+        // a part its code draws with a screen or add blend: its art again as that blend draws it
+        // over what is under it (`screen_variant`), an animation `<art>_screen` its code switches to
+        let blended: std::collections::BTreeSet<String> = char_data.scripts.iter()
+            .flat_map(|sc| crate::re!(r"(\w+)\.blendMode\s*=\s*(?:\w+\.)?BlendMode\.(?:SCREEN|ADD)\b").captures_iter(&sc.code).map(|c| c[1].to_string()).collect::<Vec<_>>())
+            .collect();
+        let variants: Vec<crate::entity_gen::ProjectilePartData> = parts.iter().filter(|p| blended.contains(&p.path) && !p.image_guids.is_empty()).filter_map(|p| {
+            let mut v = p.clone();
+            let mut renamed: std::collections::BTreeMap<String, String> = Default::default();
+            for sym in p.image_guids.keys() { renamed.insert(sym.clone(), image_extractor::screen_variant(&char_output_dir, &img_result, sym)?); }
+            v.anim = format!("{}_screen", p.anim);
+            v.image_guids = renamed.values().map(|n| (n.clone(), crate::uuid_gen::image_meta_guid(n))).collect();
+            for f in v.image_frames.iter_mut().flatten() { if let Some(n) = renamed.get(f) { *f = n.clone(); } }
+            for f in v.image_parts.iter_mut().flatten() { if let Some(n) = renamed.get(&f.0) { f.0 = n.clone(); } }
+            Some(v)
+        }).collect();
+        parts.extend(variants);
         // one record per name: the first clip found carries the record, the rest are art it can switch to
         let mut seen: std::collections::BTreeSet<String> = Default::default();
         let records: Vec<crate::entity_gen::ProjectilePartData> = parts.iter().filter(|p| seen.insert(p.path.clone())).cloned().collect();
@@ -1449,6 +1465,20 @@ fn process_character(
             .map(|n| crate::projectile_gen::projectile_content_id(&n))
             .collect();
         crate::api_mappings::set_generated_items(ids);
+    }
+
+    // the effects its code draws with a screen or add blend: the one a variable holds that its code
+    // sets the blend on, as the code made it (`x = ....attachEffect("name", ...)`, then
+    // `x.blendMode = BlendMode.SCREEN`), written again as that blend draws it
+    {
+        let code: Vec<&str> = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect();
+        let blended: std::collections::BTreeSet<String> = code.iter()
+            .flat_map(|c| crate::re!(r"(\w+)\.blendMode\s*=\s*(?:\w+\.)?BlendMode\.(?:SCREEN|ADD)\b").captures_iter(c).map(|m| m[1].to_string()).collect::<Vec<_>>()).collect();
+        let effects_named: std::collections::BTreeSet<String> = code.iter()
+            .flat_map(|c| crate::re!(r#"(\w+)\s*=\s*[^;\n]*?attachEffect\(\s*"([^"]+)""#).captures_iter(c)
+                .filter(|m| blended.contains(&m[1])).map(|m| m[2].to_string()).collect::<Vec<_>>()).collect();
+        if !effects_named.is_empty() { log::info!("drawn with a screen blend: {}", effects_named.iter().cloned().collect::<Vec<_>>().join(", ")); }
+        crate::entity_gen::set_screen_effects(&char_output_dir, effects_named);
     }
 
     // Generate Fraymakers files: art, boxes, stats and the entity, then the fighter's script from

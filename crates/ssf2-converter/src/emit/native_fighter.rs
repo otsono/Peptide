@@ -178,13 +178,21 @@ fn part_pieces(parts: &[crate::entity_gen::ProjectilePartData]) -> Vec<(String, 
     out
 }
 
-/// its parts, by name, as each animation places them (one with no art of its own shows nothing)
-fn shown_parts(placements: &[crate::entity_gen::PartPlacement]) -> Vec<native::Part> {
+/// its parts, by name, as each animation places them (one with no art of its own shows nothing);
+/// an animation cut into pieces (a smash's start, charge and attack) places them in each piece
+fn shown_parts(placements: &[crate::entity_gen::PartPlacement], pieces: &[Piece], anim_of: &BTreeMap<String, String>) -> Vec<native::Part> {
     let mut by: BTreeMap<String, native::Part> = BTreeMap::new();
     for pl in placements.iter().filter(|p| !p.art.is_empty()) {
         let e = by.entry(pl.name.clone()).or_insert_with(|| native::Part { name: pl.name.clone(), placed: Vec::new() });
         let m = &pl.matrix;
-        e.placed.push((pl.fm_anim.clone(), pl.art.clone(), m.tx, m.ty, m.rotation, m.sx, m.sy));
+        let mut shown: Vec<String> = Vec::new();
+        if !pieces.iter().any(|p| p.fm_name == pl.fm_anim) {
+            for (label, _) in anim_of.iter().filter(|(_, a)| **a == pl.fm_anim) {
+                for p in pieces.iter().filter(|p| p.label == *label) { if !shown.contains(&p.fm_name) { shown.push(p.fm_name.clone()); } }
+            }
+        }
+        if shown.is_empty() { shown.push(pl.fm_anim.clone()); }
+        for a in shown { e.placed.push((a, pl.art.clone(), m.tx, m.ty, m.rotation, m.sx, m.sy)); }
     }
     by.into_values().collect()
 }
@@ -247,7 +255,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))
             .chain(part_pieces(f.parts))
             .chain(f.effect_inners.iter().flat_map(|(n, cs)| cs.iter().map(move |c| (format!("{n}/{}", c.name), c.art.clone(), 1, c.frames.max(1))))).collect(),
-        parts: shown_parts(f.part_placements),
+        parts: shown_parts(f.part_placements, f.pieces, f.anim_of),
         content: f.content.to_string(),
         palette: f.palette.clone(),
         effect_inners: f.effect_inners.clone(),

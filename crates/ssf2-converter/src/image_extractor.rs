@@ -3404,3 +3404,29 @@ pub fn pull_shared_projectiles(
     }
     got
 }
+
+/// a picture as the source's screen (or add) blend draws it over whatever is under it: each pixel's
+/// colour carried by an alpha of its brightest channel, so drawn plainly it lightens what is under
+/// it as screen does (`under * (1 - c) + c`, exact for a grey pixel). this engine draws with no
+/// blend of its own, so a clip its code sets one on is drawn from this copy, written beside the
+/// original as `<symbol>_screen`. the copy's symbol, where the original is one of the conversion's
+pub fn screen_variant(char_dir: &Path, img_result: &ImageExtractionResult, symbol: &str) -> Option<String> {
+    let img = img_result.images.values().find(|i| i.symbol_name == symbol)?;
+    let src = char_dir.join(&img.png_path);
+    let name = format!("{symbol}_screen");
+    let dst = src.with_file_name(format!("{name}.png"));
+    if !dst.exists() {
+        let mut rgba = image::open(&src).ok()?.to_rgba8();
+        for p in rgba.pixels_mut() {
+            let a = p[3] as f64 / 255.0;
+            let (r, g, b) = (p[0] as f64 / 255.0 * a, p[1] as f64 / 255.0 * a, p[2] as f64 / 255.0 * a);
+            let m = r.max(g).max(b);
+            if m <= 0.0 { *p = image::Rgba([0, 0, 0, 0]); continue }
+            *p = image::Rgba([(r / m * 255.0).round() as u8, (g / m * 255.0).round() as u8, (b / m * 255.0).round() as u8, (m * 255.0).round() as u8]);
+        }
+        rgba.save(&dst).ok()?;
+        let meta = serde_json::json!({ "export": false, "guid": crate::uuid_gen::image_meta_guid(&name), "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2 });
+        std::fs::write(dst.with_file_name(format!("{name}.png.meta")), serde_json::to_string_pretty(&meta).ok()?).ok()?;
+    }
+    Some(name)
+}

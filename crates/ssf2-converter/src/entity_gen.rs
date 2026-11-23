@@ -378,6 +378,15 @@ pub fn take_projectile_pieces() -> BTreeMap<String, Vec<crate::emit::Piece>> {
 }
 
 thread_local! {
+    /// the effects a fighter's code draws with a screen or add blend, and where its art is: each
+    /// written again as that blend draws it (`<animation>_screen`, `screen_variant`)
+    static SCREEN_EFFECTS: std::cell::RefCell<(std::path::PathBuf, std::collections::BTreeSet<String>)> = Default::default();
+}
+pub fn set_screen_effects(char_dir: &std::path::Path, names: std::collections::BTreeSet<String>) {
+    SCREEN_EFFECTS.with(|c| *c.borrow_mut() = (char_dir.to_path_buf(), names));
+}
+
+thread_local! {
     static EFFECT_PIECES: std::cell::RefCell<BTreeMap<String, Vec<crate::emit::Piece>>> = Default::default();
     static BORROWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -2714,7 +2723,23 @@ pub fn generate_effect_entity(
             head: 0, reversed: false, borrowed: false, item_box: Vec::new(), on: None,
         }).collect());
     });
+    // (and once more as a screen or add blend draws it, where its fighter's code sets one on it)
+    let mut looks: Vec<(crate::image_extractor::ProjectileFrameImages, &str)> = vec![(frame_images.clone(), "")];
+    if let Some(dir) = SCREEN_EFFECTS.with(|c| { let c = c.borrow(); c.1.contains(&effect.name).then(|| c.0.clone()) }) {
+        let renamed: Option<BTreeMap<String, String>> = frame_images.image_guids.keys()
+            .map(|sym| crate::image_extractor::screen_variant(&dir, img_result, sym).map(|n| (sym.clone(), n))).collect();
+        if let Some(renamed) = renamed.filter(|r| !r.is_empty()) {
+            let mut v = frame_images.clone();
+            v.image_guids = renamed.values().map(|n| (n.clone(), crate::uuid_gen::image_meta_guid(n))).collect();
+            for f in v.frames.iter_mut().flatten() { if let Some(n) = renamed.get(f) { *f = n.clone(); } }
+            for f in v.parts.iter_mut().flatten() { if let Some(n) = renamed.get(&f.0) { f.0 = n.clone(); } }
+            looks.push((v, "_screen"));
+        }
+    }
+    for (frame_images, look) in &looks {
+    let effect_id = &format!("{effect_id}{look}");
     for (seg_idx, (anim_name, start, end)) in segments.iter().enumerate() {
+        let anim_name = &format!("{anim_name}{look}");
         let seg_len = end.saturating_sub(*start).max(1);
         // every part the clip draws at once gets a layer of its own: layer k shows the k-th
         // placement (depth order) of each frame, and a frame with fewer parts leaves it blank
@@ -2766,6 +2791,7 @@ pub fn generate_effect_entity(
             "layers": layer_ids,
             "pluginMetadata": {}
         }));
+    }
     }
 
     // its inner clips' own frames, an animation each, and where each of its animations places them
