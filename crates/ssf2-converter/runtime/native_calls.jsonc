@@ -200,8 +200,8 @@
   "deleteTarget": "{self}.deleteTarget({0})",
   "addForcedTarget": "{self}.addForcedTarget({0})",
   "deleteForcedTarget": "{self}.deleteForcedTarget({0})",
-  // not ported: the camera's zoom, which this engine frames for itself (as on the runtime)
-  "updateCameraParameters": { "code": "", "gap": "sets the camera's zoom, which this engine frames for itself" },
+  // the camera's zoom floor its code sets: held by the fighter's own framing (`cameraFloor`)
+  "updateCameraParameters": { "code": "cameraFloor({0})", "helper": "cameraFloor" },
   "getCameraParameter": { "code": "cameraParameter({0})", "helper": "cameraParameter", "returns": "number" },
   // not ported, as on the runtime: a named box's rectangle
   "getHitBox": { "code": "null", "returns": "rect" },

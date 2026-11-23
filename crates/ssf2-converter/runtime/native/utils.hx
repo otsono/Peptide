@@ -869,6 +869,58 @@ function cameraParameter(k) {
 	return null;
 }
 
+// ---- cameraFloor
+//: needs cameraParameter
+// the camera's zoom floor its code sets (`updateCameraParameters({ minZoomHeight })`, in the
+// source's units): the engine's camera keeps the stage's own, so while another is set the camera is
+// held at the zoom that frames the fighters in play with a body's height of room around them, never
+// closer than the floor; the stage's own floor set back gives the camera back to the engine
+function cameraFloor(o) {
+	if (o == null || o.minZoomHeight == null) return;
+	var cam = match.getCamera();
+	var own = cameraParameter("minZoomHeight");
+	if (own != null && o.minZoomHeight == own) {
+		if (match.globals.__camFloor != null && match.globals.__camMode != null) cam.setMode(match.globals.__camMode);
+		match.globals.__camFloor = null;
+		return;
+	}
+	if (match.globals.__camFloor == null) match.globals.__camMode = cam.getMode();
+	match.globals.__camFloor = o.minZoomHeight * SIZE;
+	if (match.globals.__camFloorOn != true) {
+		match.globals.__camFloorOn = true;
+		self.addTimer(1, -1, cameraFloorFrame, { persistent: true });
+	}
+	cameraFloorFrame();
+}
+// how far apart the fighters in play are, across and up, and the tallest one's height
+function fightersSpread() {
+	var x0 = null; var x1 = null; var y0 = null; var y1 = null; var tall = 0.0;
+	for (c in match.getCharacters()) {
+		if (c == null || c.isDisposed() || c.inStateGroup(CStateGroup.KO)) continue;
+		tall = Math.max(tall, c.getEcbFootY() - c.getEcbHeadY());
+		var x = c.getX(); var y = c.getY();
+		if (x0 == null || x < x0) x0 = x;
+		if (x1 == null || x > x1) x1 = x;
+		if (y0 == null || y < y0) y0 = y;
+		if (y1 == null || y > y1) y1 = y;
+	}
+	return x0 == null ? null : { w: x1 - x0, h: y1 - y0, tall: tall };
+}
+function cameraFloorFrame() {
+	var h = match.globals.__camFloor;
+	if (h == null) return;
+	var cam = match.getCamera();
+	var sp = fightersSpread();
+	// (the screen's own size: the viewport is the world it shows, its zoom scale how much of it)
+	var zs = cam.getZoomScaleY();
+	if (zs == null || zs <= 0) return;
+	var vw = cam.getViewportWidth() / zs;
+	var vh = cam.getViewportHeight() / zs;
+	var need = sp == null ? h : Math.max(h, Math.max(sp.h + 2 * sp.tall, (sp.w + 2 * sp.tall) * vh / vw));
+	if (need <= 0) return;
+	cam.setLockedZoom(vh / need, vh / need);
+}
+
 // ---- pixels
 // the pictures its code draws on and from (`BitmapData`), drawn with the engine's sprites: a picture
 // is a record (`pxCanvas`): one of its library's (`anim`, the stage sprite's animation showing it),
