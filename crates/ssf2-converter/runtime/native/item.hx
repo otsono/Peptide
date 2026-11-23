@@ -53,11 +53,17 @@ var HEIGHT_UP = HEIGHT * SIZE;
 // with no throw stance, let go), any fighter, built-in or converted
 //   sound   played on every fighter as the move happens (the game's own: `pickup`, `itemdrop`);
 //           null plays none
-//   pose    what a fighter with no stance of its own for the move (`item_pickup`) shows: one of
-//           its own animations, drawn over it, never played (so the pose's own boxes and code stay
-//           out of it); null leaves the fighter as it is
-//   frames  how many engine frames it shows `pose` for, from its first frame at its own speed (a
-//           pose shorter than that holds its last) before it stands (or falls) again
+//   pose    what a fighter with no stance of its own for the move (`item_pickup`) shows, drawn over
+//           it, never played (so the pose's own boxes and code stay out of it); null leaves the
+//           fighter as it is. either one of its own animations by name, from its first frame at its
+//           own speed, or a list of pieces of them shown one after another, each
+//           `[animation, from, to]` (its frames `from` to `to`, one an engine frame; `to` before
+//           `from` plays it backwards) or `[animation, from, to, each]` (each frame held `each`
+//           engine frames). e.g. crouch in, come back up, then hold the last frame six frames:
+//             pose: [["crouch_in", 1, 3], ["crouch_out", 4, 7], ["crouch_out", 8, 8, 6]]
+//   frames  how many engine frames it shows `pose` for before it stands (or falls) again; a pose
+//           shorter than that holds its last frame, and a list of pieces lasts at least as long as
+//           its pieces add up to (0 is just that)
 //   locked  whether nothing it presses breaks it out (a hit still does, and lets the item go)
 //   leave   (a throw) the engine frame of the row the item leaves the hand on; 0 is at once
 // a throw has a row for each way it goes (`toss_forward`, `toss_back`, `toss_up`, `toss_down`).
@@ -88,7 +94,7 @@ function hijackSound(id) {
 // it is hit where it is, with the pose drawn over it. whether it is now held in the row
 function hijack(who, row, own) {
 	hijackSound(row.sound);
-	if (row.pose == null || row.frames <= 0 || (own != null && who.hasAnimation(own)) || !who.hasAnimation(row.pose)) return false;
+	if (row.pose == null || poseLength(row) <= 0 || (own != null && who.hasAnimation(own)) || !hasPose(who, row)) return false;
 	hijackWho.set(who);
 	hijackRow.set(row);
 	hijackAt.set(0);
@@ -111,7 +117,7 @@ function hijackFrame() {
 	// (in hitstop it holds its frame)
 	if (who.getHitstop() > 0) { hijackDraw(who, row, hijackAt.get()); if (row.locked) who.clearInputBuffer(); return true; }
 	var t = hijackAt.get() + 1;
-	if (t >= row.frames) { hijackEnd(); return false; }
+	if (t >= poseLength(row)) { hijackEnd(); return false; }
 	if (!who.inState(CState.EMOTE)) {
 		if (!row.locked) { hijackDone(); hijackWho.set(null); return false; }
 		hijackHold(who);
@@ -129,14 +135,52 @@ function hijackDraw(who, row, t) {
 		hijackArtOn = who;
 		who.getTopLayer().addChild(hijackArt);
 	}
+	var at = poseAt(row, t);
 	// (its colours go on after its animation: showing another animation drops them)
-	if (hijackArt.currentAnimation != row.pose) {
-		hijackArt.currentAnimation = row.pose;
+	if (hijackArt.currentAnimation != at.anim) {
+		hijackArt.currentAnimation = at.anim;
 		var shader = who.getCostumeShader();
 		if (shader != null) hijackArt.setPalette(shader.paletteMap);
 	}
-	hijackArt.currentFrame = Std.int(Math.min(t + 1, hijackArt.totalFrames));
+	hijackArt.currentFrame = Std.int(Math.max(1, Math.min(at.frame, hijackArt.totalFrames)));
 	who.getSprite().visible = false;
+}
+// a row's pose as a list of pieces (one animation by name is one piece of it from frame 1)
+function posePieces(row) {
+	if (Std.isOfType(row.pose, String)) return [[row.pose, 1, row.frames]];
+	return row.pose;
+}
+// how many engine frames a piece shows
+function pieceLength(p) {
+	var each = p.length > 3 ? p[3] : 1;
+	return (Std.int(Math.abs(p[2] - p[1])) + 1) * each;
+}
+// how many engine frames a row shows its pose
+function poseLength(row) {
+	if (Std.isOfType(row.pose, String)) return row.frames;
+	var n = 0;
+	for (p in posePieces(row)) n += pieceLength(p);
+	return Std.int(Math.max(n, row.frames));
+}
+// whether the fighter has every animation a row's pose shows
+function hasPose(who, row) {
+	for (p in posePieces(row)) if (!who.hasAnimation(p[0])) return false;
+	return true;
+}
+// the animation and frame a row's pose shows on its engine frame `t` (past its pieces, the last)
+function poseAt(row, t) {
+	var pieces = posePieces(row);
+	for (p in pieces) {
+		var n = pieceLength(p);
+		if (t < n) {
+			var each = p.length > 3 ? p[3] : 1;
+			var step = Std.int(t / each);
+			return { anim: p[0], frame: p[2] >= p[1] ? p[1] + step : p[1] - step };
+		}
+		t -= n;
+	}
+	var last = pieces[pieces.length - 1];
+	return { anim: last[0], frame: last[2] };
 }
 function hijackDone() {
 	if (hijackArt != null) { hijackArt.remove(); hijackArt = null; }
