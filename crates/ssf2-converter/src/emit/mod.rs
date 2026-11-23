@@ -656,6 +656,27 @@ pub(crate) fn entity_animations(path: &std::path::Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// whether any script of the project makes the object of this content (names it to the engine):
+/// one nothing makes is art no code reaches, whose stats never matter
+fn made_anywhere(char_dir: &std::path::Path, key: &str, content: &str) -> bool {
+    let quoted = format!("\"{content}\"");
+    // (its own files name it as their own: not a maker)
+    let own = crate::haxe_gen::snake_to_pascal(key);
+    let mut dirs = vec![char_dir.join("library/scripts")];
+    while let Some(d) = dirs.pop() {
+        for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = f.path();
+            if p.is_dir() { dirs.push(p); continue }
+            if p.extension().and_then(|e| e.to_str()) != Some("hx") { continue }
+            if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&own)) { continue }
+            if std::fs::read_to_string(&p).is_ok_and(|t| t.contains(&quoted)) { return true }
+        }
+    }
+    // (and the frame code its entities carry)
+    std::fs::read_dir(char_dir.join("library/entities")).into_iter().flatten().flatten()
+        .any(|f| std::fs::read_to_string(f.path()).is_ok_and(|t| t.contains(&format!("\\\"{content}\\\""))))
+}
+
 /// a projectile a shared package's item says it fires (`projectiles` in the item's declaration),
 /// by its name or the clip it is drawn as: its name there and its declaration
 fn shared_shot(runtime: &Runtime, key: &str) -> Option<(String, Value)> {
@@ -896,6 +917,14 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         let (text, gaps) = written.map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
         std::fs::write(&script, &text)?;
         out.push((entity_key, gaps));
+    }
+    // (one declared by nothing that no script of the project makes is art no code reaches: its
+    // stats never matter, so its defaults are no gap; judged once every script is written)
+    for (key, gaps) in out.iter_mut() {
+        let content = crate::projectile_gen::projectile_content_id(key);
+        if gaps.iter().any(|g| g.starts_with("declared by nothing")) && !made_anywhere(char_dir, key, &content) {
+            gaps.retain(|g| !g.starts_with("declared by nothing"));
+        }
     }
     Ok(out)
 }
