@@ -630,7 +630,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let head = script.lines().take_while(|l| l.starts_with("//")).map(|l| l.len() + 1).sum::<usize>().min(script.len());
     let script = format!("{}// the files its content is found in, whoever its code is acting as\nvar ownResource = self.getResource();\n\n{}\n\n// ---- act_as: runtime/native/fighter_rules.hx\n{act_as}\n", &script[..head], &script[head..]);
     let mut gaps = w.gaps.clone();
-    if blocks.contains("copy_power") && copy_move(f).is_none() { gaps.insert("takes powers, but no clip of its says where it swallows (its code writes no KirbyPower in a frame)".into()); }
+    // (one that only reads the power it holds, writing none anywhere, never takes one: it reads none,
+    // as the source's does)
+    if blocks.contains("copy_power") && copy_move(f).is_none() && writes_power(f.model, f.runtime) { gaps.insert("takes powers, but no clip of its says where it swallows (its code writes no KirbyPower in a frame)".into()); }
     Ok((script, gaps, meta))
 }
 
@@ -729,6 +731,19 @@ fn strike_frames(entity: &Path) -> String {
         if let Some(n) = first { out.push(format!("[{}, {n}]", compile::quote(name))); }
     }
     format!("[{}]", out.join(", "))
+}
+
+/// whether its own code takes a power anywhere (`KirbyPower` written; the API's classes it carries
+/// write it for whoever calls them)
+fn writes_power(model: &crate::model::SourceModel, runtime: &crate::compile::runtime::Runtime) -> bool {
+    use crate::model::ast::{Place, Stmt};
+    let mut found = false;
+    for c in model.classes.values().filter(|c| !runtime.provides(&c.name)) {
+        for body in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
+            crate::compile::native::walk(body, &mut |st| if matches!(st, Stmt::Assign(Place::Member(_, n), _) if n == "KirbyPower") { found = true; });
+        }
+    }
+    found
 }
 
 pub fn copy_move(f: &Fighting) -> Option<CopyMove> {
