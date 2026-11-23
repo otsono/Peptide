@@ -455,6 +455,9 @@ struct Writer<'o, 'a> {
     empty_locals: BTreeSet<u32>,
     /// the variables of the function that hold the object itself now, and what they were set from
     self_locals: BTreeMap<u32, Expr>,
+    /// what each variable of the function was last set to, as written so far (what a loop over a
+    /// variable's names walks: a list or a map)
+    local_src: BTreeMap<u32, Expr>,
     /// its listeners on the game for the end of each of its frames (`gameTickEnd`), and the note of
     /// whether each listens now
     game_ticks: BTreeMap<String, String>,
@@ -564,7 +567,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), primed: false, clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), primed: false, clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), local_src: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false, arming: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -1493,6 +1496,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         self.stage_locals.clear();
         self.empty_locals.clear();
         self.self_locals.clear();
+        self.local_src.clear();
         self.part_locals.clear();
         self.effects = 0;
         let debug: BTreeMap<u32, String> = f.local_names.iter().cloned().collect();
@@ -1701,7 +1705,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let t = self.statement_call(e)?;
                 if t.is_empty() { vec![] } else { t.lines().map(|l| format!("{tab}{l}")).collect() }
             }
-            Stmt::Assign(p, v) => self.assign(p, v)?.into_iter().map(|l| format!("{tab}{l}")).collect(),
+            Stmt::Assign(p, v) => {
+                if let Place::Local(i) = p { self.local_src.insert(*i, v.clone()); }
+                self.assign(p, v)?.into_iter().map(|l| format!("{tab}{l}")).collect()
+            }
             Stmt::If(c, then, els) => {
                 let test = self.test(c)?;
                 // (a test that always passes is its body)
@@ -1730,8 +1737,25 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let name = format!("k{i}");
                 self.locals.insert(k, (name.clone(), Holds::Value(Ty::Any)));
                 let (ov, _) = self.expr(&Expr::Local(o))?;
-                self.util("keysIn")?;
-                let mut out = vec![format!("{tab}for ({name} in keysIn({ov})) {{")];
+                // (a list's places or a map's keys, written as the loop over them where what it walks
+                // is known; the source's loop over nothing runs no times, where the engine's stops)
+                // (through the variables it was copied from, to what was first put in one)
+                let mut src = self.local_src.get(&o).cloned();
+                for _ in 0..8 { match src { Some(Expr::Local(j)) => src = self.local_src.get(&j).cloned(), _ => break } }
+                // (or a value written as a list in place, `[...]`: one of the API's lists)
+                let literal = match &src {
+                    Some(Expr::Array(_)) => true,
+                    Some(e) => self.expr(e).map(|(t, _)| t.trim_start().starts_with('[')).unwrap_or(false),
+                    None => false,
+                };
+                let kind = if literal { Some(true) } else { src.as_ref().and_then(|e| self.walks_list(e)) };
+                let head = match kind {
+                    Some(true) if literal => format!("for ({name} in 0...{ov}.length) {{"),
+                    Some(true) => format!("if ({ov} != null) for ({name} in 0...{ov}.length) {{"),
+                    Some(false) => format!("if ({ov} != null) for ({name} in {ov}.keys()) {{"),
+                    None => { self.util("keysIn")?; format!("for ({name} in keysIn({ov})) {{") }
+                };
+                let mut out = vec![format!("{tab}{head}")];
                 out.extend(self.block(&body, depth + 1)?);
                 out.push(format!("{tab}}}"));
                 out
@@ -3716,6 +3740,21 @@ impl<'o, 'a> Writer<'o, 'a> {
             });
         }
         any && !other
+    }
+
+    /// what a loop over a value's names walks, where the value says: a list (true) or a map (false)
+    fn walks_list(&self, e: &Expr) -> Option<bool> {
+        match e {
+            Expr::Array(_) => Some(true),
+            Expr::New(c, _) if matches!(&**c, Expr::Name(n) if short(n) == "Array" || short(n).starts_with("Vector")) => Some(true),
+            Expr::Member(..) if self.is_dict(e) || self.is_obj_dict(e) => Some(false),
+            Expr::Member(t, f) if matches!(**t, Expr::This) => {
+                let ty = self.o.model.classes.get(&self.class)?.fields.iter().find(|d| d.name == *f)?.type_name.clone()?;
+                let ty = short(&ty);
+                (ty == "Array" || ty.starts_with("Vector")).then_some(true)
+            }
+            _ => None,
+        }
     }
 
     /// whether a value is a dictionary its class keeps in a field (only ever made as one)
