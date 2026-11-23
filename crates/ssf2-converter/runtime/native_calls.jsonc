@@ -343,7 +343,8 @@
   // its costume put on again by number (its palette reset with it)
   "setCostume": "{self}.setCostumeIndex(Std.int({0}))",
   // its box on the HUD, which the engine draws itself: a clip record with nothing in it
-  "getHealthBox": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "its HUD box, which the engine draws itself" },
+  // its HUD box: its damage counter, where a clip its code puts is drawn (`hudBox`)
+  "getHealthBox": { "code": "hudBox({self})", "helper": "screenClip", "returns": "record" },
   // the HUD's layers: the screen (`screenClip`)
   "hudBack": { "code": "screenLayer()", "helper": "screenClip", "returns": "record" },
   "hudFront": { "code": "screenLayer()", "helper": "screenClip", "returns": "record" },

@@ -137,6 +137,7 @@ function numberIn(n, base) {
 var colorFiltersOn = self.makeObject(null);
 // (the colour settings its code last put on an object, which put back are the same)
 function colorFiltersOf(t) {
+	if (t != null && t.sprite != null) return t.colors;
 	if (t == null || t.getUid == null || colorFiltersOn.get() == null) return null;
 	var was = colorFiltersOn.get().get(Std.string(t.getUid()));
 	return was == null ? null : was.o;
@@ -144,6 +145,21 @@ function colorFiltersOf(t) {
 function colorFilters(t, o) {
 	// (a copy of a fighter's body, `bodyCopy`: drawn in that fighter's own colours already)
 	if (t != null && t.body != null) return;
+	// (the picture a HUD box shows, `hudBox`: the counter's own, its hue, saturation, brightness and
+	// contrast filtered, as a picture takes no colour shader)
+	if (t != null && t.sprite != null) {
+		if (t.hsbc != null) { t.sprite.removeFilter(t.hsbc); t.hsbc = null; }
+		t.colors = o;
+		if (o == null || o == false || (o.hue == null && o.saturation == null && o.brightness == null && o.contrast == null)) return;
+		var hs = new HsbcColorFilter();
+		if (o.hue != null) hs.hue = o.hue;
+		if (o.saturation != null) hs.saturation = o.saturation / 100;
+		if (o.brightness != null) hs.brightness = o.brightness / 100;
+		if (o.contrast != null) hs.contrast = o.contrast / 100;
+		t.sprite.addFilter(hs);
+		t.hsbc = hs;
+		return;
+	}
 	// (a library clip its code made, a record: its colours are drawn nowhere here)
 	if (t == null || t.isDisposed == null || t.isDisposed()) return;
 	if (colorFiltersOn.get() == null) colorFiltersOn.set(new haxe.ds.StringMap());
@@ -1703,6 +1719,34 @@ function otherUntimer(o, h) {
 var screenShown = [];
 var screenTicking = false;
 function screenLayer() { var r = clipRecord(null); r.screen = true; return r; }
+// a fighter's HUD box (`getHealthBox`): its damage counter, a clip put in it drawn there, the
+// counter's top left its origin as the source's box keeps its own; the fighter's picture on it
+// (`charHead`) is the counter's own, which takes the colours its code puts on it
+var hudBoxes = [];
+function hudBox(who) {
+	if (who == null) return null;
+	for (b in hudBoxes) if (b.hud == who) return b;
+	var r = screenLayer();
+	r.hud = who;
+	var head = clipRecord(null);
+	head.name = "charHead";
+	head.sprite = who.getDamageCounterRenderSprite();
+	r.kids.push(head);
+	hudBoxes.push(r);
+	return r;
+}
+// the container a clip on the screen is drawn in: its HUD box's damage counter, or the camera's
+// screen layer
+function screenHost(k) {
+	var at = k;
+	var guard = 0;
+	while (at != null && guard < 32) {
+		if (at.hud != null) return at.hud.getDamageCounterContainer();
+		at = at.parentOf == null ? null : at.parentOf();
+		guard++;
+	}
+	return null;
+}
 function screenClip(id, anims, ?frames) {
 	var r = clipRecord(id);
 	r.anims = anims;
@@ -1718,7 +1762,8 @@ function screenShow(k) {
 	if (k.id != null && k.anims != null && k.drawn == null) {
 		var made = self.getResource().getContent(k.id);
 		k.drawn = made == null ? null : Sprite.create(made);
-		if (k.drawn != null) match.getCamera().getForegroundContainer().addChild(k.drawn);
+		k.host = screenHost(k);
+		if (k.drawn != null) (k.host != null ? k.host : match.getCamera().getForegroundContainer()).addChild(k.drawn);
 	}
 	screenShown.push(k);
 	if (k.kids != null) for (c in k.kids) screenShow(c);
@@ -1727,7 +1772,7 @@ function screenShow(k) {
 function screenHide(k) {
 	if (k == null || k.onScreen != true) return;
 	k.onScreen = false;
-	if (k.drawn != null) { match.getCamera().getForegroundContainer().removeChild(k.drawn); k.drawn = null; }
+	if (k.drawn != null) { (k.host != null ? k.host : match.getCamera().getForegroundContainer()).removeChild(k.drawn); k.drawn = null; }
 	screenShown.remove(k);
 	if (k.kids != null) for (c in k.kids) screenHide(c);
 }
@@ -1742,8 +1787,9 @@ function screenUpkeep() {
 		var at = k.parentOf == null ? null : k.parentOf();
 		var guard = 0;
 		while (at != null && guard < 32) { sx *= at.scaleX == null ? 1 : at.scaleX; sy *= at.scaleY == null ? 1 : at.scaleY; if (at.visible == false) on = false; at = at.parentOf == null ? null : at.parentOf(); guard++; }
-		sp.x = 320 + g.x;
-		sp.y = 180 + g.y;
+		// (on the screen its middle is the origin, in a HUD box the counter's top left)
+		sp.x = (k.host != null ? 0 : 320) + g.x;
+		sp.y = (k.host != null ? 0 : 180) + g.y;
 		sp.scaleX = sx / SIZE;
 		sp.scaleY = sy / SIZE;
 		sp.alpha = k.alpha;
