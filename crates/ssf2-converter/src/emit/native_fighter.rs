@@ -478,7 +478,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         // (and its effects, the clips inside them, and its items, where it has them)
         let written: String = functions.join("\n");
         let has = |fun: &str| written.contains(&format!("function {fun}("));
-        let mut record = vec![format!("id: {}", compile::quote(&power)), "fire: firePower".to_string()];
+        let mut record = vec![format!("id: {}", compile::quote(&power)), "fire: firePower".to_string(), "pose: POWER_POSE".to_string()];
         if has("namedEffect") { record.push("effect: namedEffect".into()); }
         if has("innerClip") && has("effectFrame") {
             functions_extra.push(native::helper(f.runtime, "fighter_rules", "kirby_power_inner", "", &[], &[]).map_err(|e| vec![e])?);

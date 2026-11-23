@@ -1065,6 +1065,11 @@ function recover(n) {
 //: each projectile it declares: its content, offset and launch (already in this engine's speed)
 // the power it gives a fighter that swallows it, on its exports (`__kirbyPower`): the name it
 // declares, and its own projectiles, fired for the one that has its power as if that one fired them
+// how a fighter that swallows it draws its power's move where that fighter has no art for it,
+// scripted: the pose on the floor and in the air, one of the swallower's animations by name or
+// pieces of them (`runtime/native/utils.hx` `poses`), e.g. `floor: [["tilt_forward", 1, 4],
+// ["stand", 1, 1, 6]]`. null leaves that one to the swallower's own default (its `POWER_POSES`)
+var POWER_POSE = { floor: null, air: null };
 function powerShot(name) {
 	switch (name) {
 		// {cases}
@@ -1391,8 +1396,9 @@ function rehearsedShots(foe, known) {
 // projectiles, or reaches up, ahead or down with its hitboxes), with its pose on the floor and in the
 // air. a pose is one of its own animations by name, stretched over the move so it lands its blow
 // where the move lands its own, or a list of pieces of them shown as written (`runtime/native/
-// utils.hx` `poses`), e.g. `[["tilt_forward", 1, 4], ["aerial_forward", 6, 12]]`. a power whose
-// record brings a row of its own (`__kirbyPower.pose`: `{ floor, air }`) is drawn by that one
+// utils.hx` `poses`), e.g. `[["tilt_forward", 1, 4], ["aerial_forward", 6, 12]]`. these are the
+// defaults: a power whose record scripts its own pose (`__kirbyPower.pose`, `{ floor, air }`, the
+// `POWER_POSE` every converted fighter publishes) is drawn by that one where it sets it
 var POWER_POSES = {
 	shoot: { floor: "item_shoot", air: "item_throw_air_forward" },
 	up: { floor: "tilt_up", air: "aerial_up" },
@@ -1437,8 +1443,10 @@ function borrowedPose(move, floor, own) {
 		dx /= n; dy /= n;
 		row = dy < -Math.abs(dx) ? POWER_POSES.up : (dy > Math.abs(dx) ? POWER_POSES.down : POWER_POSES.forward);
 	}
-	if (own != null) row = own;
 	var pose = row == null ? null : (floor ? row.floor : row.air);
+	// (the power's own pose first, where its record scripts one)
+	var mine = own == null ? null : (floor ? own.floor : own.air);
+	if (mine != null && hasPose(self, mine)) return mine;
 	return hasPose(self, pose) ? pose : null;
 }
 function borrowedFrame() {
