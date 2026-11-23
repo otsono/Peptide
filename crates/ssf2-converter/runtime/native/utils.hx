@@ -2249,13 +2249,13 @@ function itemCreatedListen(h, on) {
 // own after ten seconds (three hundred source frames), its `charSizeChange` listeners told of each
 // change; kept in the match's globals by the fighter, which every object's code reaches
 function sizeRec(c) {
+	if (c == null) return { status: 0 };
 	if (match.globals.__sizes == null) match.globals.__sizes = [];
 	for (r in match.globals.__sizes) if (r.c == c) return r;
 	var r = { c: c, status: 0, base: c.getScaleX(), heard: [], timer: -1 };
 	match.globals.__sizes.push(r);
 	return r;
 }
-function sizeStatusOf(c) { return c == null ? 0 : sizeRec(c).status; }
 function sizeSet(c, s) {
 	if (c == null || c.isDisposed()) return;
 	var r = sizeRec(c);

@@ -676,7 +676,7 @@
   "initialize": "null",
   "update": "null",
   // its size status, as its code sets it (`sizeStatus`)
-  "getSizeStatus": { "code": "sizeStatusOf({self})", "helper": "sizeStatus", "returns": "number" },
+  "getSizeStatus": { "code": "sizeRec({self}).status", "helper": "sizeStatus", "returns": "number" },
   "setSizeStatus": { "code": "sizeSet({self}, {0})", "helper": "sizeStatus" },
   // a fighter shut in a barrel: out of its own control (the engine's disabled state) until the
   // stage's code lets it go; the stage holds it, hides it and moves it itself
