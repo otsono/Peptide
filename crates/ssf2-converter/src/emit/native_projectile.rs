@@ -46,6 +46,16 @@ pub fn is_item(decls: &Decls, spec: &ObjectSpec, title: &str) -> bool {
     decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()))
 }
 
+/// The sounds an item's script plays by content id (its handler's rows, `sound: "id"`, and its own
+/// plays), brought into the project where it does not carry them; one no package has is a gap.
+pub fn item_sounds(project: &Path, script: &str, key: &str, gaps: &mut Vec<String>) {
+    let ids: Vec<String> = crate::dyn_re(r#"(?:\bsound:\s*|AudioClip\.play\([^;\n]*getContent\()"([^"]+)""#)
+        .captures_iter(script).map(|c| c[1].to_string()).collect();
+    for id in crate::sound_extractor::ensure_project_sounds(project, &ids, key) {
+        gaps.push(format!("the sound {id} it plays: no package carries it"));
+    }
+}
+
 /// The projectile's script and entity, written as Fraymakers code, with what it leaves out; or why
 /// it cannot be written.
 /// (`bare`: an item whose own code cannot be written carries the item handler alone)
@@ -410,6 +420,8 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (age.get() % 2 == 1) {\n\t}\n", "")
         .replace("\n// its end: whoever listens for it is told\nfunction onKill() {\n}\n", "");
     if let Some(n) = native::declared_twice(&script) { return Err(format!("its script declares {n} twice")) }
+    // (the sounds its handler plays on the fighters around it, carried by the project)
+    if item { item_sounds(char_dir, &script, entity_key, &mut gaps); }
 
     // its entity: each frame with code calls it, and each animation plays on into the next
     let content = crate::projectile_gen::projectile_content_id(entity_key);

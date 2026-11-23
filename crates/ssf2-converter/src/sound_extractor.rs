@@ -498,3 +498,25 @@ pub fn convert_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     if !status.success() { bail!("ffmpeg failed writing '{}' as Ogg Vorbis", entry.name); }
     Ok(())
 }
+
+/// Make sure a project carries each sound a script it ships plays by content id: one the project
+/// has no `<id>.wav` for, anywhere under its `library/audio`, is brought across from the game's
+/// packages into `library/audio`. What none carries is returned.
+pub fn ensure_project_sounds(project: &Path, ids: &[String], content_id: &str) -> Vec<String> {
+    let audio = project.join("library/audio");
+    let mut have = std::collections::BTreeSet::new();
+    let mut dirs = vec![audio.clone()];
+    while let Some(d) = dirs.pop() {
+        for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = f.path();
+            if p.is_dir() { dirs.push(p); continue }
+            if p.extension().and_then(|e| e.to_str()) == Some("wav") {
+                if let Some(s) = p.file_stem().and_then(|s| s.to_str()) { have.insert(s.to_string()); }
+            }
+        }
+    }
+    let mut want: std::collections::BTreeSet<String> = ids.iter().filter(|i| !have.contains(i.as_str())).cloned().collect();
+    if want.is_empty() { return Vec::new() }
+    pull_shared_sounds(&mut want, &audio, content_id);
+    want.into_iter().collect()
+}

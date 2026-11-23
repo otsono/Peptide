@@ -956,6 +956,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (frames.get() % 2 == 1) {\n\t}\n", "")
         .replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "\tif (!started.get()) started.set(true);\n") };
     if let Some(n) = compile::native::declared_twice(&out) { return Err(one(format!("its script declares {n} twice"))) }
+    if is_item { let mut lost = Vec::new(); super::native_projectile::item_sounds(dir, &out, &row.id, &mut lost); for g in lost { log::warn!("{}: {g}", row.id); } }
     // its files: the script, and its entity with each frame's code on its keyframe
     let lib = dir.join("library");
     unreserve_animations(&lib, &row.id).map_err(|e| one(e.to_string()))?;
