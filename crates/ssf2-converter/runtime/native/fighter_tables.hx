@@ -15,12 +15,15 @@ function clipLabel() {
 // ---- item_box
 //: SIZE the source's units in this engine's
 // where its item box is, in the source's units from its origin, on the frame it shows: the custom
-// box each animation that places one carries (`CUSTOM_BOX_A`, written from the source's); on a
-// frame that places none, where it last was
+// box each animation that places one carries (`CUSTOM_BOX_A`, written from the source's), and its
+// turn; on a frame that places none, where it last was, unturned
 function itemBox() {
 	var bs = self.getCollisionBoxes(CollisionBoxType.CUSTOMA);
-	if (bs == null || bs.length == 0) return self.exports.__ibx != null ? { x: self.exports.__ibx, y: self.exports.__iby } : { x: 0, y: 0 };
-	return { x: bs[0].centerX / SIZE, y: bs[0].centerY / SIZE };
+	if (bs == null || bs.length == 0) return self.exports.__ibx != null ? { x: self.exports.__ibx, y: self.exports.__iby, turn: 0.0 } : { x: 0, y: 0, turn: 0.0 };
+	// (and how it is turned, -180 to 180, as the box carries it)
+	var turn = bs[0].rotation;
+	if (turn > 180) turn -= 360;
+	return { x: bs[0].centerX / SIZE, y: bs[0].centerY / SIZE, turn: turn };
 }
 
 // ---- item_content

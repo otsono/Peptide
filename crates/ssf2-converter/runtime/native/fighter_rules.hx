@@ -449,13 +449,11 @@ function placeItem(it) {
 	var b = itemBox();
 	it.setX(self.getX() + self.flipX(b.x * SIZE));
 	it.setY(self.getY() + b.y * SIZE);
-	// turned as the item box turns it on this frame (`itemTurn`), the other way facing left
-	var turn = 0.0;
-	var t = animMeta().itemTurn;
-	if (t != null) for (r in t) if (self.getCurrentFrame() >= r[0]) turn = r[1];
-	it.setRotation(self.isFacingRight() ? turn : -turn);
+	// turned as the item box is on this frame, the other way facing left
+	it.setRotation(self.isFacingRight() ? b.turn : -b.turn);
 	self.exports.__ibx = b.x;
 	self.exports.__iby = b.y;
+	self.exports.__ibt = b.turn;
 }
 function askItem(it, kind, ?v) {
 	if (it != null && it.exports != null && it.exports.__ask != null) it.exports.__ask(kind, v);

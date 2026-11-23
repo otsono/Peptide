@@ -1878,6 +1878,23 @@ fn push_platform_animations(
     }
 }
 
+/// the animations a state's clip is cut into, one per label inside it, under the state's name
+/// (`toss_spinRight`), as `(name, start, end)` in 0-based source frames, end past the last: the
+/// code's jump to a label lands in the clip its state shows. every file that names a projectile's
+/// animations (its entity, its stats) names these, so they are cut in one place
+pub fn state_label_windows(state: &ProjectileStateData) -> Vec<(String, u32, u32)> {
+    let total = state.frame_count.max(1) as u32;
+    let tag = state.label.strip_prefix("attack_").unwrap_or(&state.label).to_string();
+    let mut labels: Vec<(u32, String)> = state.labels.iter()
+        .map(|(f, l)| ((*f as u32).saturating_sub(1).min(total - 1), crate::haxe_gen::label_ident(l))).collect();
+    labels.sort_by_key(|(f, _)| *f);
+    labels.dedup_by(|a, b| a.0 == b.0);
+    labels.iter().enumerate().filter_map(|(i, (f, name))| {
+        let end = labels.get(i + 1).map(|(nf, _)| *nf).unwrap_or(total);
+        (end > *f).then(|| (format!("{tag}_{name}"), *f, end))
+    }).collect()
+}
+
 /// Image + box data for one state of a multi-state projectile.
 #[derive(Debug, Clone)]
 pub struct ProjectileStateData {
@@ -2496,16 +2513,8 @@ pub fn generate_projectile_entity(
         }));
         // each label inside its clip, an animation of its own under the state's name
         // (`toss_spinRight`): the code's jump to a label lands in the clip its state shows
-        let tag = state_data.label.strip_prefix("attack_").unwrap_or(&state_data.label).to_string();
-        let mut labels: Vec<(u32, String)> = state_data.labels.iter()
-            .map(|(f, l)| ((*f as u32).saturating_sub(1).min((total as u32).saturating_sub(1)), crate::haxe_gen::label_ident(l))).collect();
-        labels.sort_by_key(|(f, _)| *f);
-        labels.dedup_by(|a, b| a.0 == b.0);
-        if !labels.is_empty() {
-            let windows: Vec<(String, u32, u32)> = labels.iter().enumerate().filter_map(|(i, (f, name))| {
-                let end = labels.get(i + 1).map(|(nf, _)| *nf).unwrap_or(total as u32);
-                (end > *f).then(|| (format!("{tag}_{name}"), *f, end))
-            }).collect();
+        let windows = state_label_windows(state_data);
+        if !windows.is_empty() {
             let full: Vec<Value> = all.iter().filter_map(|id| layers.iter().find(|l| l["$id"] == json!(id)).cloned()).collect();
             for (name, ids) in cut_windows(&mut keyframes, &mut layers, char_id, &format!("{proj_id}_extra_{state_slug}"), &full, &windows) {
                 let (_, start, end) = windows.iter().find(|(n, _, _)| *n == name).cloned().unwrap_or_default();

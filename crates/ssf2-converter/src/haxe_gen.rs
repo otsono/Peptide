@@ -3004,6 +3004,10 @@ pub(crate) fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> Projec
     for s in &proj.extra_states {
         let n = entity_gen::ssf2_proj_label_to_fm_anim(&s.label);
         if !all.contains(&n) { all.push(n); }
+        // (and the animations its clip's labels cut it into, which draw its boxes too)
+        for (w, _, _) in entity_gen::state_label_windows(s) {
+            if !all.contains(&w) { all.push(w); }
+        }
     }
     for r in &raw {
         if !all.contains(r) { all.push(r.clone()); }

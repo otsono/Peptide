@@ -167,6 +167,8 @@ function letGo(dropped) {
 	if (dropped && who != null && !who.isDisposed()) hijack(who, HIJACK.drop, null);
 	// (nothing slows it in the air but what its own code does)
 	self.updateGameObjectStats({ ghost: GHOST, gravity: GRAVITY, terminalVelocity: FALL_CAP, deathBoundsDestroy: true, aerialFriction: 0 });
+	// (out of the hand it is no longer turned by it)
+	self.setRotation(0);
 	itemTo(2);
 	tell(tossListeners, { holder: who, dropped: dropped });
 	// (and the holder's own listeners for it, `itemTossed` heard on the fighter)
@@ -239,7 +241,8 @@ function tossByHolder() {
 	if (!pickedUp.get() && who.exports != null && who.exports.__tossItem != null) who.exports.__tossItem(null, lastAsked.get());
 	else throwFromHolder();
 }
-// where its holder holds it: the holder's own item point where it publishes one, else ahead of its middle
+// where its holder holds it: the holder's own item point and turn where it publishes them, else
+// ahead of its middle, unturned
 function placeOn(who) {
 	if (who.exports != null && who.exports.__ibx != null) {
 		self.setX(who.getX() + who.flipX(who.exports.__ibx * SIZE));
@@ -249,6 +252,9 @@ function placeOn(who) {
 		self.setY((who.getEcbHeadY() + who.getEcbFootY()) / 2 + who.getY() - who.getEcbFootY());
 	}
 	if (who.isFacingRight()) self.faceRight(); else self.faceLeft();
+	// (turned as the holder's item box turns it, where it publishes one: facing sets it straight)
+	var turn = who.exports != null && who.exports.__ibt != null ? who.exports.__ibt : 0.0;
+	self.setRotation(who.isFacingRight() ? turn : -turn);
 }
 
 // what another script asks of it (`exports.__ask`): a fighter that made it holds it, throws it,

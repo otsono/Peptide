@@ -365,14 +365,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
     // engine has no stat for, and its boxes' by the source's box number)
     let mut fields_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // (where the item box turns a held item, each animation's: `itemTurn`, [first frame, degrees])
-    let turns = item_turns(&char_dir.join(format!("library/entities/{char_pascal}.entity")));
     for p in f.pieces {
         if fields_of.contains_key(&p.fm_name) { continue }
         let mut fs = Vec::new();
-        if let Some(t) = turns.get(&p.fm_name) {
-            fs.push(format!("itemTurn: [{}]", t.iter().map(|(k, d)| format!("[{k}, {}]", num(*d))).collect::<Vec<_>>().join(", ")));
-        }
         if !p.label.is_empty() { fs.push(format!("label: {}", compile::quote(&p.label))); }
         if let Some(c) = f.model.class_of(p.sym) { fs.push(format!("clip: {}", compile::quote(&c.name))); }
         if let Some((before, inside)) = clip_label_data(f.model, p) {
@@ -913,17 +908,28 @@ fn item_box_layers(entity: &std::path::Path, key: &str, pieces: &[Piece], size: 
         let total = anim["layers"].as_array().map(|ls| ls.iter().filter_map(|l| layer_len.get(l.as_str()?)).copied().max().unwrap_or(0)).unwrap_or(0);
         if total == 0 { continue }
         let tag = format!("{key}::{}::itembox", p.fm_name);
+        // (turned as the source's item box is on each frame, which turns the item it holds: the
+        // engine reads it back as the box's `rotation`; a box held still is cut where it turns)
+        let turn = turn_by_frame(&json, anim, "itembox0", &lens);
         let mut ids = Vec::new();
         for (n, (k, x, y)) in p.item_box.iter().enumerate() {
             let from = if n == 0 { 0 } else { (2 * k) as u64 };
             let to = p.item_box.get(n + 1).map(|(k, _, _)| (2 * k) as u64).unwrap_or(total).min(total);
             if to <= from { continue }
-            let sym = id(format!("{tag}::sym{n}"));
-            symbols.push(serde_json::json!({ "$id": sym, "alpha": 0.5, "color": "0x00ff00", "pivotX": 1.0, "pivotY": 1.0, "pluginMetadata": {},
-                "rotation": 0.0, "scaleX": 2.0, "scaleY": 2.0, "type": "COLLISION_BOX", "x": x * size - 1.0, "y": y * size - 1.0 }));
-            let k = id(format!("{tag}::{n}"));
-            keyframes.push(serde_json::json!({ "$id": k, "length": to - from, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
-            ids.push(k);
+            let mut cut = from;
+            while cut < to {
+                let deg = turn.get(cut as usize).copied().unwrap_or(0.0);
+                let mut end = cut + 1;
+                while end < to && turn.get(end as usize).copied().unwrap_or(0.0) == deg { end += 1; }
+                let part = if cut == from { String::new() } else { format!("@{cut}") };
+                let sym = id(format!("{tag}::sym{n}{part}"));
+                symbols.push(serde_json::json!({ "$id": sym, "alpha": 0.5, "color": "0x00ff00", "pivotX": 1.0, "pivotY": 1.0, "pluginMetadata": {},
+                    "rotation": deg, "scaleX": 2.0, "scaleY": 2.0, "type": "COLLISION_BOX", "x": x * size - 1.0, "y": y * size - 1.0 }));
+                let k = id(format!("{tag}::{n}{part}"));
+                keyframes.push(serde_json::json!({ "$id": k, "length": end - cut, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+                ids.push(k);
+                cut = end;
+            }
         }
         if ids.is_empty() { continue }
         let layer = id(format!("{tag}::layer"));
@@ -958,30 +964,17 @@ fn clip_label_data(model: &SourceModel, p: &Piece) -> Option<(Option<String>, Ve
     Some((before, inside))
 }
 
-/// the turn of each animation's item box (`itembox0`, the source's `itemBox`, which turns the item
-/// it holds), as [first engine frame, degrees from -180 to 180] where it changes; an animation
-/// whose box never turns has none
-fn item_turns(entity: &Path) -> BTreeMap<String, Vec<(u32, f64)>> {
-    let mut out = BTreeMap::new();
-    let Ok(text) = std::fs::read_to_string(entity) else { return out };
-    let Ok(d) = serde_json::from_str::<serde_json::Value>(&text) else { return out };
-    let by_id = |k: &str| -> BTreeMap<String, &serde_json::Value> {
-        d[k].as_array().map(|a| a.iter().filter_map(|x| Some((x["$id"].as_str()?.to_string(), x))).collect()).unwrap_or_default()
-    };
-    let (layers, keys, syms) = (by_id("layers"), by_id("keyframes"), by_id("symbols"));
-    for a in d["animations"].as_array().into_iter().flatten() {
-        let Some(name) = a["name"].as_str() else { continue };
-        let Some(l) = a["layers"].as_array().into_iter().flatten().filter_map(|i| layers.get(i.as_str()?)).find(|l| l["name"] == "itembox0") else { continue };
-        let mut at = 1u32;
-        let mut list: Vec<(u32, f64)> = Vec::new();
-        for k in l["keyframes"].as_array().into_iter().flatten().filter_map(|i| keys.get(i.as_str()?)) {
-            let deg = k["symbol"].as_str().and_then(|s| syms.get(s)).and_then(|s| s["rotation"].as_f64()).unwrap_or(0.0);
-            let deg = ((deg + 180.0).rem_euclid(360.0) - 180.0) * 10.0;
-            let deg = deg.round() / 10.0;
-            if list.last().map(|x| x.1) != Some(deg) { list.push((at, deg)); }
-            at += k["length"].as_u64().unwrap_or(1) as u32;
-        }
-        if list.iter().any(|x| x.1 != 0.0) { out.insert(name.to_string(), list); }
+/// the turn of a box layer of an animation on each engine frame, in degrees from -180 to 180 (the
+/// layer by its name; none, an empty list)
+fn turn_by_frame(d: &serde_json::Value, anim: &serde_json::Value, layer: &str, lens: &BTreeMap<String, u64>) -> Vec<f64> {
+    let find = |k: &str, id: &str| d[k].as_array().and_then(|a| a.iter().find(|x| x["$id"] == id)).cloned();
+    let Some(l) = anim["layers"].as_array().into_iter().flatten().filter_map(|i| find("layers", i.as_str()?)).find(|l| l["name"] == layer) else { return Vec::new() };
+    let mut out = Vec::new();
+    for k in l["keyframes"].as_array().into_iter().flatten().filter_map(|i| i.as_str()) {
+        let deg = find("keyframes", k).and_then(|k| k["symbol"].as_str().and_then(|s| find("symbols", s)))
+            .and_then(|s| s["rotation"].as_f64()).unwrap_or(0.0);
+        let deg = (((deg + 180.0).rem_euclid(360.0) - 180.0) * 10.0).round() / 10.0;
+        for _ in 0..lens.get(k).copied().unwrap_or(1) { out.push(deg); }
     }
     out
 }
