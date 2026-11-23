@@ -453,7 +453,6 @@ function placeItem(it) {
 	it.setRotation(self.isFacingRight() ? b.turn : -b.turn);
 	self.exports.__ibx = b.x;
 	self.exports.__iby = b.y;
-	self.exports.__ibt = b.turn;
 }
 function askItem(it, kind, ?v) {
 	if (it != null && it.exports != null && it.exports.__ask != null) it.exports.__ask(kind, v);

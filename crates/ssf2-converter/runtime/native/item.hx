@@ -241,8 +241,8 @@ function tossByHolder() {
 	if (!pickedUp.get() && who.exports != null && who.exports.__tossItem != null) who.exports.__tossItem(null, lastAsked.get());
 	else throwFromHolder();
 }
-// where its holder holds it: the holder's own item point and turn where it publishes them, else
-// ahead of its middle, unturned
+// where its holder holds it: the holder's own item point where it publishes one, else ahead of its
+// middle; turned as the holder's item box is
 function placeOn(who) {
 	if (who.exports != null && who.exports.__ibx != null) {
 		self.setX(who.getX() + who.flipX(who.exports.__ibx * SIZE));
@@ -252,8 +252,11 @@ function placeOn(who) {
 		self.setY((who.getEcbHeadY() + who.getEcbFootY()) / 2 + who.getY() - who.getEcbFootY());
 	}
 	if (who.isFacingRight()) self.faceRight(); else self.faceLeft();
-	// (turned as the holder's item box turns it, where it publishes one: facing sets it straight)
-	var turn = who.exports != null && who.exports.__ibt != null ? who.exports.__ibt : 0.0;
+	// (turned as the holder's item box is on this frame, read off the box itself: a keyframe holds
+	// its turn for its whole length, and a frame with no box is unturned)
+	var bs = who.getCollisionBoxes(CollisionBoxType.CUSTOMA);
+	var turn = bs == null || bs.length == 0 ? 0.0 : bs[0].rotation;
+	if (turn > 180) turn -= 360;
 	self.setRotation(who.isFacingRight() ? turn : -turn);
 }
 
