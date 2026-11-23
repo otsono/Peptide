@@ -53,68 +53,101 @@ var HEIGHT_UP = HEIGHT * SIZE;
 // with no throw stance, let go), any fighter, built-in or converted
 //   sound   played on every fighter as the move happens (the game's own: `pickup`, `itemdrop`);
 //           null plays none
-//   anim    what a fighter with no stance of its own for the move (`item_pickup`) is put in: an
-//           animation every fighter has; null leaves the fighter as it is
-//   frames  how many engine frames it is held in `anim` before it stands (or falls) again
+//   pose    what a fighter with no stance of its own for the move (`item_pickup`) shows: one of
+//           its own animations, drawn over it, never played (so the pose's own boxes and code stay
+//           out of it); null leaves the fighter as it is
+//   frames  how many engine frames it shows `pose` for, from its first frame at its own speed (a
+//           pose shorter than that holds its last) before it stands (or falls) again
 //   locked  whether nothing it presses breaks it out (a hit still does, and lets the item go)
-//   leave   (a throw) the engine frame of `anim` the item leaves the hand on; 0 is at once
+//   leave   (a throw) the engine frame of the row the item leaves the hand on; 0 is at once
 // a throw has a row for each way it goes (`toss_forward`, `toss_back`, `toss_up`, `toss_down`).
-// a row's anim runs only where the fighter has none of its own: one with `item_pickup` plays that.
+// a row's pose shows only where the fighter has none of its own: one with `item_pickup` plays that.
 var HIJACK = {
-	pickup: { sound: "pickup", anim: "crouch_out", frames: 4, locked: true },
-	toss_forward: { sound: null, anim: "grab", frames: 20, locked: true, leave: 6 },
-	toss_back: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
-	toss_up: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
-	toss_down: { sound: null, anim: null, frames: 0, locked: false, leave: 0 },
-	drop: { sound: "itemdrop", anim: null, frames: 0, locked: false }
+	pickup: { sound: "pickup", pose: "crouch_out", frames: 4, locked: true },
+	toss_forward: { sound: null, pose: "grab", frames: 20, locked: true, leave: 6 },
+	toss_back: { sound: null, pose: null, frames: 0, locked: false, leave: 0 },
+	toss_up: { sound: null, pose: null, frames: 0, locked: false, leave: 0 },
+	toss_down: { sound: null, pose: null, frames: 0, locked: false, leave: 0 },
+	drop: { sound: "itemdrop", pose: null, frames: 0, locked: false }
 };
-// the fighter it holds in a row's anim, the row, and the engine frames of it left
+// the fighter it holds in a row's pose, the row, and how many engine frames of it have shown
 var hijackWho = self.makeObject(null);
 var hijackRow = self.makeObject(null);
-var hijackLeft = self.makeInt(0);
+var hijackAt = self.makeInt(0);
+// (the drawing is not game state: it is redrawn from `hijackAt` every frame)
+var hijackArt = null;
+var hijackArtOn = null;
 // a sound by its content id, where the project carries it
 function hijackSound(id) {
 	if (id == null) return;
 	var c = self.getResource().getContent(id);
 	if (c != null) AudioClip.play(c);
 }
-// a row run on a fighter: its sound, and its anim where `own` (the fighter's own stance for the
-// move) is missing. whether the fighter is now held in it
+// a row run on a fighter: its sound, and its pose where `own` (the fighter's own stance for the
+// move) is missing. the fighter stays in a plain state on its own standing (or falling) body, so
+// it is hit where it is, with the pose drawn over it. whether it is now held in the row
 function hijack(who, row, own) {
 	hijackSound(row.sound);
-	if (row.anim == null || row.frames <= 0 || (own != null && who.hasAnimation(own)) || !who.hasAnimation(row.anim)) return false;
+	if (row.pose == null || row.frames <= 0 || (own != null && who.hasAnimation(own)) || !who.hasAnimation(row.pose)) return false;
 	hijackWho.set(who);
 	hijackRow.set(row);
-	// (the frame it is put in is the first of them)
-	hijackLeft.set(row.frames - 1);
-	who.toState(CState.EMOTE);
-	who.playAnimation(row.anim);
+	hijackAt.set(0);
+	hijackHold(who);
+	hijackDraw(who, row, 0);
 	return true;
 }
-// each frame of a row's anim: a locked one is put back wherever the fighter's own inputs (or the
-// engine starting the attack the press began) took it; at its end the fighter stands, or falls,
-// with the presses made through it spent
+// the plain state a row holds its fighter in: nothing of its own runs there
+function hijackHold(who) {
+	who.toState(CState.EMOTE, who.isOnFloor() ? "stand" : "fall_loop");
+}
+// each frame of a row: the pose drawn on; a locked row puts the fighter back wherever its own
+// inputs (or the engine starting the attack the press began) took it, an open one ends where they
+// did; at its end the fighter stands, or falls, with the presses made through it spent
 function hijackFrame() {
 	var who = hijackWho.get();
-	if (who == null) return false;
+	if (who == null) { if (hijackArt != null) hijackDone(); return false; }
 	var row = hijackRow.get();
-	if (who.isDisposed() || knocked(who)) { hijackWho.set(null); return false; }
-	if (hijackLeft.get() <= 0) { hijackEnd(); return false; }
-	hijackLeft.set(hijackLeft.get() - 1);
-	if (row.locked) {
-		if (!who.inState(CState.EMOTE)) who.toState(CState.EMOTE);
-		if (who.getAnimation() != row.anim) who.playAnimation(row.anim);
-		// (an anim shorter than its frames holds on its last)
-		if (who.getCurrentFrame() >= who.getTotalFrames()) who.pause();
-		who.clearInputBuffer();
+	if (who.isDisposed() || knocked(who)) { hijackDone(); hijackWho.set(null); return false; }
+	// (in hitstop it holds its frame)
+	if (who.getHitstop() > 0) { hijackDraw(who, row, hijackAt.get()); if (row.locked) who.clearInputBuffer(); return true; }
+	var t = hijackAt.get() + 1;
+	if (t >= row.frames) { hijackEnd(); return false; }
+	if (!who.inState(CState.EMOTE)) {
+		if (!row.locked) { hijackDone(); hijackWho.set(null); return false; }
+		hijackHold(who);
 	}
+	if (row.locked) who.clearInputBuffer();
+	hijackAt.set(t);
+	hijackDraw(who, row, t);
 	return true;
+}
+// its pose drawn in its own colours over its hidden body, a frame of the pose each engine frame
+function hijackDraw(who, row, t) {
+	if (hijackArt == null || hijackArt.isDisposed() || hijackArtOn != who) {
+		hijackDone();
+		hijackArt = Sprite.create(who.getGameObjectStat("spriteContent"));
+		hijackArtOn = who;
+		who.getTopLayer().addChild(hijackArt);
+	}
+	// (its colours go on after its animation: showing another animation drops them)
+	if (hijackArt.currentAnimation != row.pose) {
+		hijackArt.currentAnimation = row.pose;
+		var shader = who.getCostumeShader();
+		if (shader != null) hijackArt.setPalette(shader.paletteMap);
+	}
+	hijackArt.currentFrame = Std.int(Math.min(t + 1, hijackArt.totalFrames));
+	who.getSprite().visible = false;
+}
+function hijackDone() {
+	if (hijackArt != null) { hijackArt.remove(); hijackArt = null; }
+	if (hijackArtOn != null && !hijackArtOn.isDisposed()) hijackArtOn.getSprite().visible = true;
+	hijackArtOn = null;
 }
 function hijackEnd() {
 	var who = hijackWho.get();
+	hijackDone();
 	hijackWho.set(null);
 	if (who == null || who.isDisposed() || knocked(who)) return;
-	who.resume();
 	if (who.inState(CState.EMOTE) || who.inStateGroup(CStateGroup.ATTACK) || who.inState(CState.GRAB)) who.toState(who.isOnFloor() ? CState.STAND : CState.FALL);
 	who.clearInputBuffer();
 }
@@ -195,7 +228,7 @@ function throwFromHolder() {
 	var stance = (who.isOnFloor() ? "item_throw_" : "item_throw_air_") + way;
 	// (a fighter with no throw stance of its own, one of the engine's own: the press's attack is
 	// the throw, so the item takes it over, standing the fighter or letting it fall, and leaves)
-	// (its toss row, where it scripts one, plays in place of the throw stance it lacks)
+	// (its toss row, where it scripts one, shows in place of the throw stance it lacks)
 	var row = way == "up" ? HIJACK.toss_up : way == "down" ? HIJACK.toss_down : way == "back" ? HIJACK.toss_back : HIJACK.toss_forward;
 	var scripted = hijack(who, row, stance);
 	if (!who.hasAnimation(stance) && !(scripted && row.leave > 0)) {
@@ -348,7 +381,7 @@ function takeUpFrame(who) {
 		who.playAnimation("item_pickup");
 	}
 	// (one with no pickup stance of its own: the press's attack was the pickup, taken over, by its
-	// pickup row's anim where it scripts one)
+	// pickup row's pose where it scripts one)
 	var scripted = hijackWho.get() == who && hijackRow.get() == HIJACK.pickup;
 	if (left > 0 && !who.hasAnimation("item_pickup") && !scripted) standDown(who);
 	var taking = left > 0 || scripted || who.getAnimation() == "item_pickup";
@@ -480,7 +513,7 @@ function update() {
 // its end: whoever listens for it is told
 function onKill() {
 	itemTo(3);
-	// (a fighter it holds in a row's anim is let go of it)
+	// (a fighter it holds in a row's pose is let go of it)
 	hijackEnd();
 	// {ends}
 }
