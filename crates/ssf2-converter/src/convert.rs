@@ -1470,22 +1470,33 @@ fn process_character(
     // the effects its code draws with a screen or add blend: the one a variable holds that its code
     // sets the blend on, as the code made it (`x = ....attachEffect("name", ...)`, then
     // `x.blendMode = BlendMode.SCREEN`), written again as that blend draws it
-    {
-        let code: Vec<&str> = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect();
+    // (and the projectiles it fires that way, `x = ....fireProjectile("name")`, its own code's or
+    // the code of what it borrows: written again once their entities are, below)
+    let screen_shots: std::collections::BTreeSet<String> = {
+        let code: Vec<&str> = char_data.scripts.iter().map(|sc| sc.code.as_str()).chain(lent_code.iter().map(String::as_str)).collect();
         let blended: std::collections::BTreeSet<String> = code.iter()
-            .flat_map(|c| crate::re!(r"(\w+)\.blendMode\s*=\s*(?:\w+\.)?BlendMode\.(?:SCREEN|ADD)\b").captures_iter(c).map(|m| m[1].to_string()).collect::<Vec<_>>()).collect();
-        let effects_named: std::collections::BTreeSet<String> = code.iter()
-            .flat_map(|c| crate::re!(r#"(\w+)\s*=\s*[^;\n]*?attachEffect\(\s*"([^"]+)""#).captures_iter(c)
-                .filter(|m| blended.contains(&m[1])).map(|m| m[2].to_string()).collect::<Vec<_>>()).collect();
-        if !effects_named.is_empty() { log::info!("drawn with a screen blend: {}", effects_named.iter().cloned().collect::<Vec<_>>().join(", ")); }
+            .flat_map(|c| crate::re!(r"(\w+)(?:\.getStanceMC\(\))?\.blendMode\s*=\s*(?:\w+\.)?BlendMode\.(?:SCREEN|ADD)\b").captures_iter(c).map(|m| m[1].to_string()).collect::<Vec<_>>()).collect();
+        let made = |call: &str| -> std::collections::BTreeSet<String> {
+            let re = regex::Regex::new(&format!(r#"(\w+)\s*=\s*[^;\n]*?{call}\(\s*"([^"]+)""#)).expect("pattern");
+            code.iter().flat_map(|c| re.captures_iter(c).filter(|m| blended.contains(&m[1])).map(|m| m[2].to_string()).collect::<Vec<_>>()).collect()
+        };
+        let effects_named = made("attachEffect");
+        let shots = made("fireProjectile");
+        if !effects_named.is_empty() || !shots.is_empty() { log::info!("drawn with a screen blend: {}", effects_named.iter().chain(shots.iter()).cloned().collect::<Vec<_>>().join(", ")); }
         crate::entity_gen::set_screen_effects(&char_output_dir, effects_named);
-    }
+        shots
+    };
 
     // Generate Fraymakers files: art, boxes, stats and the entity, then the fighter's script from
     // its own code (see docs/CONVERTER_DESIGN.md)
     haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), parsed_swf,
         multi_char_slot, input_path)?;
+    for shot in &screen_shots {
+        let content = crate::projectile_gen::projectile_content_id(shot);
+        let path = char_output_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
+        crate::entity_gen::add_screen_animations(&path, &char_output_dir, char_name, &img_result)?;
+    }
     // a package whose fighter the writer cannot read (one that declares none) has no script to
     // write: the rest of the project is still written, and its log says why the script is missing
     let mut validation = validation;

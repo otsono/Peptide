@@ -2926,3 +2926,78 @@ mod turned_tests {
 fn image_alpha(a: f64) -> Value {
     if a >= 0.9995 { json!(1) } else { json!((a.max(0.0) * 1000.0).round() / 1000.0) }
 }
+
+/// every animation of a written entity again as a screen or add blend draws it (`<animation>_screen`):
+/// its layers, keyframes and symbols copied, each picture the conversion's copy that carries its
+/// colour in its alpha (`screen_variant`), its boxes and frame code as they are. for an object a
+/// fighter's code draws with that blend (a projectile its code fires and then blends). whether any
+/// animation was added
+pub fn add_screen_animations(entity_path: &std::path::Path, char_dir: &std::path::Path, char_id: &str,
+                             img_result: &crate::image_extractor::ImageExtractionResult) -> std::io::Result<bool> {
+    let Ok(text) = std::fs::read_to_string(entity_path) else { return Ok(false) };
+    let Ok(mut e) = serde_json::from_str::<Value>(&text) else { return Ok(false) };
+    // (every picture the project holds, by its guid: its own, and those drawn from what it borrows)
+    let _ = img_result;
+    let mut by_guid: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
+    let mut dirs = vec![char_dir.join("library/sprites")];
+    while let Some(d) = dirs.pop() {
+        for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = f.path();
+            if p.is_dir() { dirs.push(p); continue }
+            if !p.to_string_lossy().ends_with(".png.meta") { continue }
+            let Some(g) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|m| m["guid"].as_str().map(String::from)) else { continue };
+            by_guid.insert(g, p.with_extension(""));
+        }
+    }
+    let index = |list: &Value| -> BTreeMap<String, Value> {
+        list.as_array().map(|a| a.iter().filter_map(|v| Some((v["$id"].as_str()?.to_string(), v.clone()))).collect()).unwrap_or_default()
+    };
+    let (layers, keyframes, symbols) = (index(&e["layers"]), index(&e["keyframes"]), index(&e["symbols"]));
+    let anims: Vec<Value> = e["animations"].as_array().cloned().unwrap_or_default();
+    if anims.iter().any(|a| a["name"].as_str().is_some_and(|n| n.ends_with("_screen"))) { return Ok(false) }
+    let (mut new_layers, mut new_kfs, mut new_syms, mut new_anims) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for a in &anims {
+        let name = a["name"].as_str().unwrap_or_default().to_string();
+        let mut lids: Vec<Value> = Vec::new();
+        for lid in a["layers"].as_array().cloned().unwrap_or_default() {
+            let Some(layer) = lid.as_str().and_then(|l| layers.get(l)) else { continue };
+            let mut nl = layer.clone();
+            let nlid = uuid(char_id, &format!("screen_{name}_{}", lid.as_str().unwrap_or_default()));
+            nl["$id"] = json!(nlid);
+            let mut kids: Vec<Value> = Vec::new();
+            for kid in layer["keyframes"].as_array().cloned().unwrap_or_default() {
+                let Some(kf) = kid.as_str().and_then(|k| keyframes.get(k)) else { continue };
+                let mut nk = kf.clone();
+                let nkid = uuid(char_id, &format!("screen_{name}_{}", kid.as_str().unwrap_or_default()));
+                nk["$id"] = json!(nkid);
+                if let Some(sym) = kf["symbol"].as_str().and_then(|s| symbols.get(s)) {
+                    let mut ns = sym.clone();
+                    let nsid = uuid(char_id, &format!("screen_{name}_{}", sym["$id"].as_str().unwrap_or_default()));
+                    ns["$id"] = json!(nsid);
+                    if let Some(png) = sym["imageAsset"].as_str().and_then(|g| by_guid.get(g)) {
+                        let stem = png.file_stem().and_then(|x| x.to_str()).unwrap_or_default().to_string();
+                        if let Some(v) = crate::image_extractor::screen_variant_of(png, &stem) { ns["imageAsset"] = json!(crate::uuid_gen::image_meta_guid(&v)); }
+                    }
+                    nk["symbol"] = json!(nsid);
+                    new_syms.push(ns);
+                }
+                new_kfs.push(nk);
+                kids.push(json!(nkid));
+            }
+            nl["keyframes"] = json!(kids);
+            new_layers.push(nl);
+            lids.push(json!(nlid));
+        }
+        let mut na = a.clone();
+        na["$id"] = json!(uuid(char_id, &format!("screen_{name}_anim")));
+        na["name"] = json!(format!("{name}_screen"));
+        na["layers"] = json!(lids);
+        new_anims.push(na);
+    }
+    if new_anims.is_empty() { return Ok(false) }
+    for (k, add) in [("layers", new_layers), ("keyframes", new_kfs), ("symbols", new_syms), ("animations", new_anims)] {
+        if let Some(list) = e[k].as_array_mut() { list.extend(add); }
+    }
+    std::fs::write(entity_path, serde_json::to_string_pretty(&e)?)?;
+    Ok(true)
+}

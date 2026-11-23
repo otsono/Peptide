@@ -689,7 +689,8 @@
   // code, a player's control handed over, a final smash given, lives set, an unlock earned
   "PeptideAPI.spawnCharacter": { "code": "null", "returns": "object", "gap": "spawnCharacter: a fighter put in the match by code" },
   "setHumanControl": { "code": "", "gap": "setHumanControl: a player's control handed to another fighter" },
-  "grantFinalSmash": { "code": "false", "returns": "bool", "gap": "grantFinalSmash: a final smash given by code" },
+  // a final smash given (`grantFinal`): its next special is its final smash, where it has one
+  "grantFinalSmash": { "code": "grantFinal({self})", "helper": "grantFinal", "returns": "bool" },
   "setLives": "{self}.setLives(Std.int({0}))",
   "PeptideAPI.triggerUnlock": { "code": "", "gap": "triggerUnlock: the game's unlockables" },
   // a timer taken off by the function it runs, where this engine takes one off by its id

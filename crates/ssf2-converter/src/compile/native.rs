@@ -1203,6 +1203,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         if self.o.fighter {
+            // (its final smash, the source's `special` attack, for whatever gives it one: `grantFinal`)
+            if let Some(anim) = (self.o.root_anim)("special") {
+                self.blocks.insert("start_attack".into());
+                out.publish.push(format!("self.exports.__finalSmash = function() {{ startAttack({}); }};", quote(&anim)));
+                out.publish.push("self.addTimer(1, -1, finalHeldFrame, { persistent: true });".into());
+                self.util("grantFinal")?;
+            }
             // (a fighter's: on the clip it shows, whichever that is)
             if !self.o.stance_labels.is_empty() {
                 self.class = String::new();
@@ -5442,6 +5449,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
                     let (val, ty) = self.expr(v)?;
                     out.push(format!("if ({who} != null && {who}.exports != null && {who}.exports.__source != null) {who}.exports.__source.__stats.set({}, {val})", quote(k)));
+                    if let Some((code, h)) = st.status_writes.get(k) { self.util(h)?; out.push(code.replace("{who}", who).replace("{v}", &paren(&val))); continue }
                     let name = st.fm_runtime_read_names.get(k).cloned().unwrap_or_else(|| k.clone());
                     if !st.fm_runtime_stats.contains(&name) || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { continue }
                     let value = if matches!(ty, Ty::Bool | Ty::Str) { val.clone() } else {
@@ -5853,8 +5861,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             // another object's attack stat the engine keeps natively, read back from its own field
             // a stat its owner states: what its code set it to since, else what it declares
             ("getCharacterStat", [Expr::Str(k)]) if self.owners.contains(who) => {
-                // (one its owner never states: read as nothing set, 0, and said in its gaps)
-                let Some(declared) = (self.o.owner_declares)(k) else {
+                // (one its owner never states: the source's default for it, `runtime_read_defaults`;
+                // one with none read as nothing set, 0, and said in its gaps)
+                let default = crate::mappings::character_stats().runtime_read_defaults.get(k).map(|v| v.to_string());
+                let Some(declared) = (self.o.owner_declares)(k).or(default) else {
                     self.gaps.insert(format!("reads its owner's stat {k}, which its owner does not state: read as 0"));
                     return Ok(("0".into(), Ty::Num));
                 };
@@ -6156,6 +6166,7 @@ self.playFrameLabel({})", quote(f))); }
                     let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
                     let (val, ty) = self.expr(v)?;
                     out.push(format!("source.__stats.set({}, {val})", quote(k)));
+                    if let Some((code, h)) = st.status_writes.get(k) { self.util(h)?; out.push(code.replace("{who}", "self").replace("{v}", &paren(&val))); continue }
                     let name = st.fm_runtime_read_names.get(k).cloned().unwrap_or_else(|| k.clone());
                     if !st.fm_runtime_stats.contains(&name) || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { continue }
                     let src = (self.o.owner_declares)(k).and_then(|d| d.parse::<f64>().ok()).filter(|d| *d != 0.0);

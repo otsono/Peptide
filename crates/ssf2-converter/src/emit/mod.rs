@@ -512,7 +512,7 @@ pub fn fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
 
 /// An item written as Fraymakers code, made a custom game object: its entity, its script and its
 /// entry in the manifest say so (its stats file's fields are a game object's too)
-fn custom_game_object(char_dir: &std::path::Path, key: &str) -> anyhow::Result<()> {
+pub(crate) fn custom_game_object(char_dir: &std::path::Path, key: &str) -> anyhow::Result<()> {
     let content = crate::projectile_gen::projectile_content_id(key);
     let set_type = |v: &mut serde_json::Value| {
         if let Some(m) = v.pointer_mut("/pluginMetadata/com.fraymakers.FraymakersMetadata/objectType") { *m = serde_json::json!("CUSTOM_GAME_OBJECT"); }

@@ -61,6 +61,10 @@ pub struct StatMappings {
     /// What a stat read while the match runs is called here, source name → engine name.
     #[serde(default)]
     pub fm_runtime_read_names: BTreeMap<String, String>,
+    /// A stat the source keeps that this engine keeps as a status rather than a stat: the call
+    /// that puts it on a fighter (`{who}` the fighter, `{v}` the value written) and its helper.
+    #[serde(default)]
+    pub status_writes: BTreeMap<String, (String, String)>,
     /// What a stat this engine does not have answers when read: the source's default for it.
     #[serde(default)]
     pub runtime_read_defaults: BTreeMap<String, serde_json::Value>,

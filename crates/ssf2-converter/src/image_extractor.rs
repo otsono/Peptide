@@ -3412,7 +3412,11 @@ pub fn pull_shared_projectiles(
 /// original as `<symbol>_screen`. the copy's symbol, where the original is one of the conversion's
 pub fn screen_variant(char_dir: &Path, img_result: &ImageExtractionResult, symbol: &str) -> Option<String> {
     let img = img_result.images.values().find(|i| i.symbol_name == symbol)?;
-    let src = char_dir.join(&img.png_path);
+    screen_variant_of(&char_dir.join(&img.png_path), symbol)
+}
+/// `screen_variant` of a picture the project holds at `src`, named `symbol`
+pub fn screen_variant_of(src: &Path, symbol: &str) -> Option<String> {
+    let src = src.to_path_buf();
     let name = format!("{symbol}_screen");
     let dst = src.with_file_name(format!("{name}.png"));
     if !dst.exists() {

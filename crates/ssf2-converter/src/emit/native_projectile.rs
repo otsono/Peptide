@@ -68,6 +68,8 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let item = is_item(decls, spec, title) || compile::short(&spec.class) == "PeptideItem"
         || found.is_some_and(|c| class_chain(model, c).iter().any(|s| s == "PeptideItem"));
     let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("runtime/native/projectile.hx or item.hx is missing")?;
+    // (an item is a custom game object carrying the item handler, whatever its entity was written as)
+    if item { super::custom_game_object(char_dir, entity_key).map_err(|e| e.to_string())?; }
     // (a class that extends another of its package's is the two as one: `inherited`)
     let merged = match found { Some(c) => inherited(model, runtime, c)?, None => None };
     let itself = merged.as_ref().or(found);

@@ -96,7 +96,9 @@
   // source's own default for it. a stat every source character has and none states (whether
   // a foe can be launched at all) reads true, the way the source reads it
   "runtime_read_defaults": {
-    "canReceiveKnockback": true
+    "canReceiveKnockback": true,
+    "heavyArmor": 0,
+    "canBeGrabbed": true
   },
 
   // what a stat read while the match runs is measured in: a script does its own arithmetic on
@@ -126,6 +128,14 @@
     "jumpSpeedList": "{recv}.getCharacterStat(\"doubleJumpSpeeds\").map(function(__v) { return (__v + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}; }).join(\",\")",
     // the name the fighter shows: the one its damage counter shows by default
     "displayName": "{recv}.getDefaultDamageCounterName()"
+  },
+
+  // a stat the source keeps that this engine keeps as a status: [the call that puts it on the
+  // fighter (`{who}`, the value `{v}`), its helper in runtime/native/utils.hx]. heavy armor is
+  // super armor for each hit dealing less than it; not grabbable is no grabbable area
+  "status_writes": {
+    "heavyArmor": ["heavyArmor({who}, {v})", "heavyArmor"],
+    "canBeGrabbed": ["grabbable({who}, {v})", "heavyArmor"]
   },
 
   "fm_runtime_read_names": {

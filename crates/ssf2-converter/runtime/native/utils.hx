@@ -1446,6 +1446,68 @@ function hurtInterrupt(o, f) {
 	o.addTimer(1, -1, watch, { persistent: true });
 }
 
+// ---- grantFinal
+// a final smash given to a fighter (`grantFinalSmash`): the special it starts next is its final
+// smash (the source's `special` attack, which a converted fighter publishes, `__finalSmash`), as
+// the source's fighter holding a smash ball does; one with none of its own is given nothing. whether
+// it was given one. the fighter watches for that special itself, each frame (`finalHeldFrame`)
+function grantFinal(who) {
+	if (who == null || who.isDisposed() || who.exports == null || who.exports.__finalSmash == null) return false;
+	who.exports.__finalHeld = true;
+	return true;
+}
+// (the frame it goes into a special, from one it was not in: the press that would start it)
+var finalWasSpecial = false;
+function finalHeldFrame() {
+	var special = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN);
+	var started = special && !finalWasSpecial;
+	finalWasSpecial = special;
+	if (self.exports.__finalHeld != true) return;
+	if (self.inStateGroup(CStateGroup.KO)) { self.exports.__finalHeld = false; return; }
+	if (started) { self.exports.__finalHeld = false; finalWasSpecial = false; self.exports.__finalSmash(); }
+}
+
+// ---- heavyArmor
+// a fighter's heavy armor its code sets (`heavyArmor`): a hit dealing less than that lands its
+// damage without making it flinch, the engine's super armor put on it for the hit where the hit
+// is dealt (every object that can hit is listened to as it comes in); 0 takes it off. and whether
+// it can be grabbed (`canBeGrabbed`): the engine's grabbable area, none, or its own back. both
+// kept in the match's globals by the fighter
+function heavyArmor(who, n) {
+	if (who == null) return;
+	if (match.globals.__heavyArmor == null) { match.globals.__heavyArmor = []; match.globals.__armorWatched = []; }
+	var all = match.globals.__heavyArmor;
+	var mine = null;
+	for (h in all) if (h.o == who) mine = h;
+	if (mine == null) { mine = { o: who, n: 0.0 }; all.push(mine); }
+	mine.n = n == null ? 0 : n;
+	var watch = function() {
+		var seen = match.globals.__armorWatched;
+		var objs = [];
+		for (c in match.getCharacters()) objs.push(c);
+		for (p in match.getProjectiles()) objs.push(p);
+		for (g in match.getCustomGameObjects()) objs.push(g);
+		for (a in objs) {
+			if (seen.indexOf(a) >= 0) continue;
+			seen.push(a);
+			a.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(e) {
+				var foe = e.data.foe;
+				var hb = e.data.hitboxStats;
+				if (foe == null || hb == null) return;
+				for (h in match.globals.__heavyArmor) if (h.o == foe && h.n > 0 && hb.damage < h.n) foe.applyGlobalBodyStatus(BodyStatus.SUPER_ARMOR, 1);
+			}, { persistent: true });
+		}
+	};
+	watch();
+	if (match.globals.__armorTicking != true) { match.globals.__armorTicking = true; who.addTimer(1, -1, watch, { persistent: true }); }
+}
+function grabbable(who, on) {
+	if (who == null) return;
+	if (who.exports != null && who.exports.__ownGrabArea == null) who.exports.__ownGrabArea = who.getCharacterStat("grabbableAreaType");
+	var own = who.exports == null ? null : who.exports.__ownGrabArea;
+	who.updateCharacterStats({ grabbableAreaType: on == false ? GrabbableAreaType.NONE : (own == null ? GrabbableAreaType.AUTO : own) });
+}
+
 // ---- stageFocus
 // the camera frames the whole stage for `n` of the source's frames, its fighters not followed
 // (`CameraMode.STAGE`), then follows them again; a call while it does starts the count over, and
