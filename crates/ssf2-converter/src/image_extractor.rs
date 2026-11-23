@@ -1308,6 +1308,8 @@ fn build_anim_frame_images(
                                     sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat, po.ratio));
                                 }
                             }
+                            // (a placement naming neither a new object nor one to move does nothing)
+                            swf::PlaceObjectAction::None => {}
                             swf::PlaceObjectAction::Modify => {
                                 // A MODIFY with no matrix only re-states the object (a
                                 // "keep" frame) — preserve its existing transform rather
@@ -1796,6 +1798,8 @@ pub fn child_placements(swf: &swf::Swf<'_>, sprite_id: u16, name: &str) -> Vec<O
                 let named = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string());
                 match &po.action {
                     swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_) => { at.insert(po.depth, (named.unwrap_or_default(), po_to_mat(po))); }
+                    // (a placement naming neither a new object nor one to move does nothing)
+                    swf::PlaceObjectAction::None => {}
                     swf::PlaceObjectAction::Modify => {
                         if let Some(e) = at.get_mut(&po.depth) {
                             if po.matrix.is_some() { e.1 = po_to_mat(po); }
@@ -1920,6 +1924,8 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                                 disp.insert(po.depth, (*cid, format!("__nested@{}", frames.len()), mat));
                             }
                         }
+                        // (a placement naming neither a new object nor one to move does nothing)
+                        swf::PlaceObjectAction::None => {}
                         swf::PlaceObjectAction::Modify => {
                             // A MODIFY with no matrix only re-states the object —
                             // keep its existing transform.
@@ -2067,6 +2073,8 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                             }
                         }
                     }
+                    // (a placement naming neither a new object nor one to move does nothing)
+                    swf::PlaceObjectAction::None => {}
                     swf::PlaceObjectAction::Modify => {
                         // A MODIFY with no matrix only re-states the object —
                         // keep its existing transform.

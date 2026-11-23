@@ -11,7 +11,7 @@ met by this file when the project is redistributed.
 
 ## SWF / Flash parsing
 
-* **`swf` 0.3** -- part of the [Ruffle](https://github.com/ruffle-rs/ruffle) project. MIT OR
+* **`swf` 0.4** -- part of the [Ruffle](https://github.com/ruffle-rs/ruffle) project. MIT OR
   Apache-2.0. the converter's entire Flash-parsing path (decompression, tag walking, ABC block
   extraction) sits on top of this crate. ABC decompilation and SSF-wrapper handling are written
   from scratch in this repo, but the SWF binary parsing itself is `swf`'s.

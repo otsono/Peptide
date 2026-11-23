@@ -181,6 +181,8 @@ pub fn frames(tags: &[swf::Tag]) -> Vec<Vec<Placed>> {
                         };
                         depth.insert(po.depth, e);
                     }
+                    // (a placement naming neither a new object nor one to move does nothing)
+                    swf::PlaceObjectAction::None => {}
                     swf::PlaceObjectAction::Modify => {
                         if let Some(e) = depth.get_mut(&po.depth) {
                             if let Some(m) = po.matrix.as_ref() { e.matrix = Matrix::of(m); }

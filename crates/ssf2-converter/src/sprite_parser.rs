@@ -525,7 +525,7 @@ fn attribute_children(
         if let swf::Tag::PlaceObject(po) = t {
             let cid = match &po.action {
                 swf::PlaceObjectAction::Place(c) | swf::PlaceObjectAction::Replace(c) => *c,
-                swf::PlaceObjectAction::Modify => continue,
+                swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
             };
             if !sprites.contains_key(&cid) { continue; } // a shape, not a clip
             if map.contains_key(&cid) { continue; }      // already claimed by an earlier xframe
@@ -636,7 +636,7 @@ fn extract_content_switch_frames(sprite: &swf::Sprite) -> Vec<u16> {
         match tag {
             swf::Tag::PlaceObject(po) => match &po.action {
                 swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_) => changed = true,
-                swf::PlaceObjectAction::Modify => {}
+                swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => {}
             },
             swf::Tag::RemoveObject(_) => changed = true,
             swf::Tag::ShowFrame => {
@@ -1402,6 +1402,8 @@ fn extract_frame_boxes(
                             if let Some(m) = po.matrix { entry.matrix = m; }
                         }
                     }
+                    // (a placement naming neither a new object nor one to move does nothing)
+                    swf::PlaceObjectAction::None => {}
                     swf::PlaceObjectAction::Modify => {
                         // Update position of existing object
                         if let Some(entry) = display_list.get_mut(&po.depth) {

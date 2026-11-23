@@ -1004,6 +1004,7 @@ fn cmd_tags(args: &[String]) -> Result<()> {
                             } else { format!("#{id}{}", names.get(&id).map(|n| format!(" ({n})")).unwrap_or_default()) }
                         }
                         ssf2_converter::swf::PlaceObjectAction::Modify => "modify".to_string(),
+                        ssf2_converter::swf::PlaceObjectAction::None => "nothing".to_string(),
                     };
                     println!("  frame {frame} depth {:<3} {what} matrix ({:.3}, {:.3}, {:.3}, {:.3}) tx ({}, {}) name {:?}",
                         p.depth, m.a.to_f32(), m.b.to_f32(), m.c.to_f32(), m.d.to_f32(), m.tx.to_pixels(), m.ty.to_pixels(),

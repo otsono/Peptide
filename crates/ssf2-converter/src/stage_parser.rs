@@ -32,7 +32,7 @@ fn root_mat(tags: &[swf::Tag], sym_names: &BTreeMap<u16, String>) -> Mat {
         let swf::Tag::PlaceObject(po) = t else { continue };
         let id = match &po.action {
             swf::PlaceObjectAction::Place(i) | swf::PlaceObjectAction::Replace(i) => *i,
-            swf::PlaceObjectAction::Modify => continue,
+            swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
         };
         let named = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252)).as_deref() == Some("stageMC");
         let sym = sym_names.get(&id).map(|n| n.rsplit('.').next().unwrap_or(n).to_ascii_lowercase()).unwrap_or_default();
@@ -1357,7 +1357,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 let swf::Tag::PlaceObject(po) = t else { continue };
                 let id = match &po.action {
                     swf::PlaceObjectAction::Place(i) | swf::PlaceObjectAction::Replace(i) => *i,
-                    swf::PlaceObjectAction::Modify => continue,
+                    swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
                 };
                 if let Some(k) = sym_names.get(&id).and_then(|n| roles.get(n.rsplit('.').next().unwrap_or(n))).and_then(|r| r.sync_platform.clone()) { return Some(k) }
                 if let Some(child) = sprites.get(&id) {
@@ -5535,6 +5535,7 @@ fn extract_labeled_clip_anims(
                             swf::PlaceObjectAction::Place(i) => format!("Place({i})"),
                             swf::PlaceObjectAction::Replace(i) => format!("Replace({i})"),
                             swf::PlaceObjectAction::Modify => "Modify".into(),
+                            swf::PlaceObjectAction::None => "None".into(),
                         };
                         let a = po.color_transform.map(|ct| {
                             (f32::from(ct.a_multiply) as f64, f32::from(ct.a_add) as f64)
@@ -6080,6 +6081,8 @@ fn display_list_at(tags: &[swf::Tag], frame: usize) -> Vec<PlacedAt> {
                             visible: po.is_visible.unwrap_or(true),
                         });
                     }
+                    // (a placement naming neither a new object nor one to move does nothing)
+                    swf::PlaceObjectAction::None => {}
                     swf::PlaceObjectAction::Modify => {
                         if let Some(e) = at.get_mut(&po.depth) {
                             if po.matrix.is_some() { e.matrix = po.matrix; }
@@ -7252,7 +7255,7 @@ fn collect_class_sites(
             let swf::Tag::PlaceObject(po) = tag else { continue };
             let id = match &po.action {
                 swf::PlaceObjectAction::Place(i) | swf::PlaceObjectAction::Replace(i) => *i,
-                swf::PlaceObjectAction::Modify => continue,
+                swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
             };
             let local = po.matrix.as_ref().map(|m| Mat {
                 a: m.a.to_f64(), b: m.b.to_f64(), c: m.c.to_f64(), d: m.d.to_f64(),
@@ -7291,7 +7294,7 @@ fn collect_class_sites(
             let swf::Tag::PlaceObject(po) = tag else { continue };
             let id = match &po.action {
                 swf::PlaceObjectAction::Place(i) | swf::PlaceObjectAction::Replace(i) => *i,
-                swf::PlaceObjectAction::Modify => continue,
+                swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
             };
             let local = po.matrix.as_ref().map(|m| Mat {
                 a: m.a.to_f64(), b: m.b.to_f64(), c: m.c.to_f64(), d: m.d.to_f64(),
@@ -7369,7 +7372,7 @@ fn collect_class_sites(
                         if cp.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252)).as_deref() != Some("ground") { continue }
                         let cid = match &cp.action {
                             swf::PlaceObjectAction::Place(i) | swf::PlaceObjectAction::Replace(i) => *i,
-                            swf::PlaceObjectAction::Modify => continue,
+                            swf::PlaceObjectAction::Modify | swf::PlaceObjectAction::None => continue,
                         };
                         let cl = cp.matrix.as_ref().map(|m| Mat {
                             a: m.a.to_f64(), b: m.b.to_f64(), c: m.c.to_f64(), d: m.d.to_f64(),
