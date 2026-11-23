@@ -416,9 +416,10 @@
   // a library class asked for by a name its code builds: its name, as a clip class its code makes
   // records of (`k.new()`), drawn nowhere here
   "getDefinitionByName": { "code": "{ id: {0}, w: 0, h: 0, name: {0} }", "returns": "record" },
-  // a projectile another object fires (an item its holder swings): what that object publishes for
-  // it, where it does; the game's own items fire nothing here
-  "createProjectile": { "code": "({self} != null && {self}.exports != null && {self}.exports.__fire != null ? {self}.exports.__fire({0}) : null)", "returns": "object", "gap": "an item's own projectile, fired by its holder" },
+  // a projectile another object fires (an item its holder swings): the shots that object publishes
+  // (`__fire`, every ported item's), off where its declaration places them; one it does not
+  // declare fires nothing, as the source's item fires nothing it does not declare
+  "createProjectile": { "code": "({self} != null && {self}.exports != null && {self}.exports.__fire != null ? {self}.exports.__fire({0}{,1}{,2}) : null)", "returns": "object" },
   // a clip's own frame code taken off: a clip record's (`clipRun`) runs no more of it; one drawn into
   // its owner's art runs none here already
   "PeptideUtils.removeFrameScripts": { "code": "{ var nc = {0}; if (nc != null && nc.labelList != null) nc.frames = null; }" },

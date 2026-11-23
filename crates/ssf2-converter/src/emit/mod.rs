@@ -791,6 +791,15 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                         m.classes.values().find(|c| own_stats(c).is_some_and(|v| v.get("linkage_id").and_then(|l| l.str()).is_some_and(|l| l.eq_ignore_ascii_case(&entity_key))))
                             .or_else(|| m.classes.values().find(|c| compile::short(&c.name).eq_ignore_ascii_case(&entity_key) && own_stats(c).is_some()))
                     };
+                    // (or one a class of that package says it fires, `getProjectileStats`: a pokemon's
+                    // shot)
+                    let matches = |n: &str, d: &Value| cid(n) == cid(&entity_key) || d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(&entity_key));
+                    let shot = if found.is_some() || enemy.is_some() { None } else {
+                        m.classes.values().filter_map(|c| c.methods.iter().find(|x| x.name == "getProjectileStats" && !x.is_static))
+                            .filter_map(|x| crate::model::declare::returned(&x.function.body))
+                            .find_map(|v| v.entries().iter().find(|(n, d)| matches(n, d)).cloned()).map(|(n, d)| (fighter, n, d))
+                    };
+                    let found = found.or(shot);
                     let (decls, title, stats, class, clip) = match (&found, enemy) {
                         (Some((f, n, d)), _) => (Decls::of(f), n.clone(), d.clone(),
                             d.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),

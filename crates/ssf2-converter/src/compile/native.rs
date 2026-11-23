@@ -247,6 +247,9 @@ pub struct Object<'a> {
     /// the clips with code of their own nested in its art, by class: each a record whose timeline
     /// runs as its parent's places it (`nestedClip`)
     pub nested: Vec<String>,
+    /// the projectiles an item declares it fires, published for its holder's code to fire through
+    /// it (`__fire`: a ray gun a fighter swings shoots its own shot)
+    pub shots: Vec<String>,
 }
 
 /// one of a fighter's parts: how its code names it, and each animation that places it, as
@@ -1209,6 +1212,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         } else if !cases.is_empty() {
             out.functions.push(helper(self.o.runtime, "helpers", "jump_to", "jumpTo", &[], &cases)?);
             out.publish.push("self.exports.__playFrame = jumpTo;".into());
+        }
+        // (an item's shots, fired by whoever holds it: `getItem().fireProjectile(name, x, y)`)
+        if self.o.item {
+            let mut cases = Vec::new();
+            for n in self.o.shots.clone() {
+                if (self.o.fired)(&n).is_none() { continue }
+                let f = self.fire(&n, "self")?;
+                cases.push(format!("case {}: return {f}(x, y);", quote(&n)));
+            }
+            if !cases.is_empty() { out.publish.push(format!("self.exports.__fire = function(name, ?x, ?y) {{ switch (name) {{ {} }} return null; }};", cases.join(" "))); }
         }
         // an object's own methods another object's code calls on it, on its exports
         if !self.o.fighter {

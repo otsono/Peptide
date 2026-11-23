@@ -53,6 +53,11 @@ pub fn is_item(decls: &Decls, spec: &ObjectSpec, title: &str) -> bool {
 pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
              pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner, bare: bool) -> Result<(String, Vec<String>), String> {
     let mut gaps: Vec<String> = Vec::new();
+    // (boxes its own package states nothing of, where its declaration is another package's)
+    if !matches!(spec.stats, Value::Null) {
+        let path = char_dir.join(format!("library/scripts/Projectile/{}HitboxStats.hx", crate::haxe_gen::snake_to_pascal(entity_key)));
+        crate::haxe_gen::restate_projectile_hitboxes(&path, entity_key, &spec.stats).map_err(|e| e.to_string())?;
+    }
     // its own class, where its package gives it one: the API's projectile, extended
     let found = if bare || matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
         let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
@@ -275,6 +280,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
         parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false, own_parts: crate::emit::object_parts(entity_key), nested: nested.clone(),
+        shots: if item { own_fired.iter().map(|(n, _)| n.clone()).collect() } else { Vec::new() },
     };
     let wrote = !(bare || (classes.is_empty() && itself.is_none()));
     let written = if wrote { native::write(&object)? } else { native::Written::default() };

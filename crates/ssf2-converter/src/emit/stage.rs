@@ -569,7 +569,7 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(), made_objects: made_objects.clone(), particles: particles.clone(), clip_bounds: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
-        effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: input_origin, power_record: false, own_parts: Vec::new(), nested: Vec::new(),
+        effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: input_origin, power_record: false, own_parts: Vec::new(), nested: Vec::new(), shots: Vec::new(),
     };
     if !written { return compile::native::census(&object) }
     match compile::native::write(&object) { Ok(w) => { *out = Some(w); Vec::new() } Err(e) => vec![e] }
@@ -822,7 +822,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: is_item, stage: false, clip_parts: BTreeMap::new(), made_objects: made_objects.clone(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
-        content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: row.instance.clone(), origin: input_origin, power_record: false, own_parts: Vec::new(), nested: Vec::new(),
+        content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: row.instance.clone(), origin: input_origin, power_record: false, own_parts: Vec::new(), nested: Vec::new(), shots: Vec::new(),
     };
     let w = compile::native::write(&object).map_err(one)?;
     let skeleton = runtime.native_files.get("object").ok_or_else(|| one("runtime/native/object.hx is missing".into()))?;

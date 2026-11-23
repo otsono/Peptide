@@ -3219,10 +3219,62 @@ pub(crate) fn generate_projectile_hitbox_stats(
     proj: &entity_gen::ProjectileInfo,
     ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
+    projectile_hitbox_text(entity_id, &projectile_anim_names(proj).all, ssf2_match)
+}
+
+/// a projectile's hitbox stats written again from the declaration another package states for it
+/// (a shot a class of that package declares, an item the game's shared packages lend), where the
+/// conversion found none of its own and wrote placeholders: each animation the file already names
+/// takes the declared boxes. whether it did
+pub(crate) fn restate_projectile_hitboxes(path: &Path, entity_id: &str, decl: &crate::model::declare::Value) -> std::io::Result<bool> {
+    use crate::model::declare::Value;
+    let Ok(text) = fs::read_to_string(path) else { return Ok(false) };
+    // (the placeholder note `proj_hitbox_source_default` writes)
+    if !text.contains("no matching SSF2 projectile-stats entry") { return Ok(false) }
+    // its boxes, as the source's parser reads a declaration's: the boxes of `attackBoxes`, else of
+    // each record it holds, each under the index its name gives it (`attackBox2` the second)
+    fn boxes(v: &Value) -> Vec<std::collections::BTreeMap<String, f64>> {
+        let Value::Obj(o) = v else { return Vec::new() };
+        if let Some(b) = v.get("attackBoxes") { return boxes(b) }
+        if o.iter().any(|(k, _)| ["damage", "direction", "power", "kbConstant", "hitStun", "hitLag", "weightKB"].contains(&k.as_str())) {
+            return vec![o.iter().filter_map(|(k, v)| match v {
+                Value::Num(n) => Some((k.clone(), *n)),
+                Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })),
+                _ => None,
+            }).collect()];
+        }
+        let mut out: Vec<std::collections::BTreeMap<String, f64>> = Vec::new();
+        for (k, v) in o {
+            let Some(suffix) = k.strip_prefix("attackBox") else { continue };
+            let idx = if suffix.is_empty() { 0.0 } else { suffix.parse::<f64>().map(|n| n - 1.0).unwrap_or(0.0) };
+            for mut hb in boxes(v) { hb.entry(crate::abc_parser::BOX_INDEX_KEY.to_string()).or_insert(idx); out.push(hb); }
+        }
+        out.sort_by(|a, b| a.get(crate::abc_parser::BOX_INDEX_KEY).partial_cmp(&b.get(crate::abc_parser::BOX_INDEX_KEY)).unwrap_or(std::cmp::Ordering::Equal));
+        if out.is_empty() { for (_, v) in o { out.extend(boxes(v)); } }
+        out
+    }
+    let data = crate::abc_parser::ProjectileData {
+        stats: decl.entries().iter().filter_map(|(k, v)| match v { Value::Num(n) => Some((k.clone(), *n)), _ => None }).collect(),
+        flags: decl.entries().iter().filter_map(|(k, v)| match v { Value::Bool(b) => Some((k.clone(), *b)), _ => None }).collect(),
+        names: decl.entries().iter().filter_map(|(k, v)| match v { Value::Str(x) => Some((k.clone(), x.clone())), _ => None }).collect(),
+        hitboxes: boxes(decl),
+    };
+    // (one box to an index: the first state that declares it, as an object literal keeps one)
+    let mut data = data;
+    let mut seen = std::collections::BTreeSet::new();
+    data.hitboxes.retain(|hb| seen.insert(hb.get(crate::abc_parser::BOX_INDEX_KEY).map(|v| *v as i64).unwrap_or(0)));
+    if data.hitboxes.is_empty() { return Ok(false) }
+    // (the animations it draws, as the file it replaces names them)
+    let anims: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("    ").and_then(|l| l.strip_suffix(": {")))
+        .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).map(String::from).collect();
+    fs::write(path, projectile_hitbox_text(entity_id, &anims, Some(&data)))?;
+    Ok(true)
+}
+
+fn projectile_hitbox_text(entity_id: &str, all_anims: &[String], ssf2_match: Option<&crate::abc_parser::ProjectileData>) -> String {
     let t = &crate::mappings::script_templates().projectile.stats;
     let req = crate::mappings::require_template;
     let mapping = crate::mappings::character_hitbox_stats();
-    let anims = projectile_anim_names(proj);
 
     if std::env::var("PEPTIDE_DUMP_PROJ_STATS").is_ok() {
         if let Some(d) = ssf2_match { eprintln!("[proj-stats] {entity_id}: {} box(es): {:?}", d.hitboxes.len(), d.hitboxes); }
@@ -3312,7 +3364,7 @@ pub(crate) fn generate_projectile_hitbox_stats(
     // its `loop`, which had an empty entry, and flew through a fighter dealing nothing). an
     // animation with no boxes never reads its entry
     let mut anim_blocks: Vec<String> = Vec::new();
-    for name in &anims.all {
+    for name in all_anims {
         {
             anim_blocks.push(req("projectile.stats.proj_hitbox_active_block", &t.proj_hitbox_active_block)
                 .replace("{{name}}", name).replace("{{idle_body}}", &idle_body));
