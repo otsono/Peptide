@@ -181,8 +181,9 @@
   "setConserveHorizontalMomentum": "ownConserveSet(\"h\", {0})",
   "setConserveUpwardMomentum": "ownConserveSet(\"u\", {0})",
   "setConserveDownwardMomentum": "ownConserveSet(\"d\", {0})",
-  "swapDepths": "",
-  "swapChildren": "",
+  // two objects' places in the drawing order traded (`drawOrderParent`)
+  "swapDepths": { "code": "drawOrderSwap({self}, {0})", "helper": "drawOrderParent" },
+  "swapChildren": { "code": "drawOrderSwap({0}, {1})", "helper": "drawOrderParent" },
   "getMidground": { "code": "stage", "returns": "object" },
   "PeptideAPI.getStage": { "code": "stage", "returns": "object" },
   // an item asked to fly free (its own script throws it)
@@ -526,10 +527,10 @@
     "removeFromDamageMeter": "",
     "updateBar": "{self}.left = {0}",
     // (a point or a box copied: the only records the source's API copies)
-    // (a clip's place in the drawing order of the one it is drawn in: this engine keeps each object
-    // on its own layer, so the first, and moving one changes nothing)
-    "getChildIndex": "0",
-    "setChildIndex": "",
+    // (a clip's place in the drawing order of the one it is drawn in: the match's order where that
+    // one is an object's clip's parent, `drawOrderParent`; a clip record keeps none, so the first)
+    "getChildIndex": "({self} != null && {self}.getChildIndex != null ? {self}.getChildIndex({0}) : 0)",
+    "setChildIndex": "if ({self} != null && {self}.setChildIndex != null) {self}.setChildIndex({0}, {1})",
     // (two boxes overlapping)
     "intersects": "({self} != null && {0} != null && {self}.x < {0}.x + {0}.width && {0}.x < {self}.x + {self}.width && {self}.y < {0}.y + {0}.height && {0}.y < {self}.y + {self}.height)",
     // (a point moved by an offset)

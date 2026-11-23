@@ -669,10 +669,55 @@ function floorOwner(c) {
 }
 
 // ---- drawOrderParent
-// the clip an object's clip is drawn in, as its code reads it for drawing order: this engine draws
-// each object on its own layer, so every place in it is the first and moving one changes nothing
+// the clip an object's clip is drawn in, as its code reads and moves it for drawing order: the
+// match's objects back to front, kept in the match's globals (the fighters, then the objects and
+// projectiles, in the order they came, until a script moves one), and each move made on the
+// engine's own order too, against the object it now sits next to (`sendBehind`, `bringInFront`,
+// `swapDepths`)
+function drawOrder() {
+	var was = match.globals.__drawOrder;
+	var live = [];
+	var ids = [];
+	if (was != null) for (o in was) if (o != null && !o.isDisposed()) { live.push(o); ids.push(o.getUid()); }
+	for (list in [match.getCharacters(), match.getCustomGameObjects(), match.getProjectiles()]) {
+		if (list == null) continue;
+		for (o in list) if (o != null && !o.isDisposed() && ids.indexOf(o.getUid()) < 0) { live.push(o); ids.push(o.getUid()); }
+	}
+	match.globals.__drawOrder = live;
+	return live;
+}
+function drawOrderIndex(o) {
+	if (o == null || o.getUid == null) return -1;
+	var order = drawOrder();
+	for (i in 0...order.length) if (order[i].getUid() == o.getUid()) return i;
+	return -1;
+}
+function drawOrderSet(o, i) {
+	var at = drawOrderIndex(o);
+	if (at < 0) return;
+	var order = drawOrder();
+	var it = order[at];
+	order.splice(at, 1);
+	if (i < 0) i = 0;
+	if (i > order.length) i = order.length;
+	order.insert(i, it);
+	if (i + 1 < order.length) it.sendBehind(order[i + 1]);
+	else if (i > 0) it.bringInFront(order[i - 1]);
+}
+function drawOrderSwap(a, b) {
+	var i = drawOrderIndex(a);
+	var j = drawOrderIndex(b);
+	if (i < 0 || j < 0 || i == j) return;
+	var order = drawOrder();
+	var x = order[i];
+	order[i] = order[j];
+	order[j] = x;
+	a.swapDepths(b);
+}
 function drawOrderParent() {
-	return { getChildIndex: function(c) { return 0; }, setChildIndex: function(c, i) { return null; }, numChildren: 0 };
+	return { getChildIndex: function(c) { return drawOrderIndex(c); }, setChildIndex: function(c, i) { drawOrderSet(c, i); return null; },
+		addChildAt: function(c, i) { drawOrderSet(c, i); return c; }, swapChildren: function(a, b) { drawOrderSwap(a, b); return null; },
+		numChildren: drawOrder().length };
 }
 
 // ---- replaceFirst

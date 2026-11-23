@@ -3048,9 +3048,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Member(t, n) if n == "currentFrame" && self.counts_frames() && (matches!(**t, Expr::This) || self.is_clip(t)) => (self.clip_frame_helper()?, Ty::Num),
             // the clip an effect it keeps sits in: the effect, while it is there
             Expr::Member(o, n) if n == "parent" && !matches!(**o, Expr::This) && !self.is_clip(o) => {
-                // (an object's clip's: read for drawing order, which this engine keeps on layers)
+                // (an object's clip's: the match's drawing order, `drawOrderParent`)
                 if !self.o.stage && matches!(&**o, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "getMC")) {
-                    self.gaps.insert("reads an object's place in its parent's drawing order, which this engine keeps on layers".into());
                     self.util("drawOrderParent")?;
                     return Ok(("drawOrderParent()".into(), Ty::Rect));
                 }
@@ -4217,12 +4216,15 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         // an object's clip put back in its parent at a place in the drawing order (`parent.addChildAt(o.getMC(), i)`):
-        // this engine draws each object on its own layer, so only its order would change
-        if let (Expr::Member(p, m), [x, _]) = (f, args) {
+        // the match's drawing order (`drawOrderParent`)
+        if let (Expr::Member(p, m), [x, i]) = (f, args) {
             if matches!(m.as_str(), "addChildAt" | "setChildIndex") && matches!(&**p, Expr::Member(_, n) if n == "parent")
                 && matches!(x, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if matches!(n.as_str(), "getMC" | "stanceClip" | "getStanceMC"))) {
-                self.gaps.insert("moves an object in its parent's drawing order, which this engine keeps on layers".into());
-                return Ok(("// (not ported: an object moved in its parent's drawing order; this engine draws each object on its own layer)".into(), Ty::Any));
+                let Expr::Call(g, _) = x else { unreachable!() };
+                let who = match &**g { Expr::Member(o, _) => self.expr(o)?.0, _ => "self".to_string() };
+                let (i, _) = self.expr(i)?;
+                self.util("drawOrderParent")?;
+                return Ok((format!("drawOrderSet({who}, {i})"), Ty::Any));
             }
         }
         // a static method of one of its package's classes, called by the class's name: written as a
