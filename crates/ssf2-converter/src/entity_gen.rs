@@ -1063,7 +1063,7 @@ pub fn generate_entity(
                         let img = img_result.images.get(&img_result.shape_to_bitmap.get(&shape_id).copied().unwrap_or(shape_id))
                             .or_else(|| img_result.images.values().find(|img| img.symbol_name == entry.symbol_name))?;
                         let meta_guid = image_guids.get(&img.symbol_name).cloned().unwrap_or_default();
-                        let (fsx, fsy) = img_result.shape_fill_scale.get(&shape_id).copied().unwrap_or((1.0, 1.0));
+                        let fill = img_result.shape_fill_scale.get(&shape_id).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]);
                         // Where a placed shape lands is ONE conversion, shared with the stage art
                         // path (see `fm_placement`).
                         let placement = crate::fm_placement::image_placement(
@@ -1074,7 +1074,7 @@ pub fn generate_entity(
                                 a: entry.world_a, b: entry.world_b, c: entry.world_c, d: entry.world_d,
                             },
                             img_result.shape_pivot.get(&shape_id).copied().unwrap_or((0.0, 0.0)),
-                            (fsx, fsy),
+                            fill,
                         );
                         // A turn animation is drawn facing the direction being turned FROM, and
                         // fraymakers flips the character's facing when the turn STARTS, so the

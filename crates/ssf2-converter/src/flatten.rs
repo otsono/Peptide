@@ -27,7 +27,7 @@ const RES: f64 = 1.0;
 pub struct Art<'a> {
     pub shape_to_bitmap: &'a ShapeToBitmapMap,
     pub shape_pivot: &'a BTreeMap<u16, (f64, f64)>,
-    pub shape_fill_scale: &'a BTreeMap<u16, (f64, f64)>,
+    pub shape_fill_scale: &'a BTreeMap<u16, crate::image_extractor::FillLinear>,
 }
 
 impl Art<'_> {
@@ -37,11 +37,9 @@ impl Art<'_> {
 
     /// the piece's picture pixel (u, v) in the world: `world = A·(u, v) + o`
     fn transform(&self, e: &FrameImageEntry) -> [f64; 6] {
-        let (px, py) = self.shape_pivot.get(&e.shape_id).copied().unwrap_or((0.0, 0.0));
-        let (fx, fy) = self.shape_fill_scale.get(&e.shape_id).copied().unwrap_or((1.0, 1.0));
-        let (a, b, c, d) = (e.world_a, e.world_b, e.world_c, e.world_d);
-        let (ox, oy) = (px * fx, py * fy);
-        [a * fx, b * fx, c * fy, d * fy, e.world_tx + a * ox + c * oy, e.world_ty + b * ox + d * oy]
+        crate::image_extractor::compose_fill(
+            [e.world_a, e.world_b, e.world_c, e.world_d, e.world_tx, e.world_ty],
+            self.shape_pivot.get(&e.shape_id).copied(), self.shape_fill_scale.get(&e.shape_id).copied())
     }
 }
 

@@ -74,18 +74,20 @@ fn round2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }
 
 /// Convert a world placement into the IMAGE symbol fields that draw it.
 ///
-/// `pivot` is the art's top-left within the shape's own bounds and `fill_scale` the bitmap fill's
-/// scale (both `(0,0)` / `(1,1)` when they do not apply).
-pub fn image_placement(w: &WorldPlacement, pivot: (f64, f64), fill_scale: (f64, f64)) -> ImagePlacement {
-    let (fsx, fsy) = fill_scale;
-    let (off_x, off_y) = (pivot.0 * fsx, pivot.1 * fsy);
-    ImagePlacement {
-        x: round2(w.tx + w.a * off_x + w.c * off_y),
-        y: round2(w.ty + w.b * off_x + w.d * off_y),
-        scale_x: round2(w.sx * fsx),
-        scale_y: round2(w.sy * fsy),
-        rotation: normalise_degrees(w.rotation),
+/// `pivot` is the art's top-left within the shape's own bounds, in the picture's pixels, and
+/// `fill` the bitmap fill's linear part `[a, b, c, d]` (identity when neither applies). A fill
+/// that turns the picture (a spinning item is a run of shapes filling one picture at their own
+/// angles) composes into the placement; an axis-aligned one only scales it.
+pub fn image_placement(w: &WorldPlacement, pivot: (f64, f64), fill: [f64; 4]) -> ImagePlacement {
+    let [la, lb, lc, ld] = fill;
+    let (off_x, off_y) = (la * pivot.0 + lc * pivot.1, lb * pivot.0 + ld * pivot.1);
+    let (x, y) = (round2(w.tx + w.a * off_x + w.c * off_y), round2(w.ty + w.b * off_x + w.d * off_y));
+    if lb == 0.0 && lc == 0.0 {
+        return ImagePlacement { x, y, scale_x: round2(w.sx * la), scale_y: round2(w.sy * ld), rotation: normalise_degrees(w.rotation) };
     }
+    let m = WorldPlacement::from_affine(w.a * la + w.c * lb, w.b * la + w.d * lb,
+                                        w.a * lc + w.c * ld, w.b * lc + w.d * ld, 0.0, 0.0);
+    ImagePlacement { x, y, scale_x: round2(m.sx), scale_y: round2(m.sy), rotation: normalise_degrees(m.rotation) }
 }
 
 /// Reflect a placement about the vertical axis: what a MIRRORED copy of the same art looks like.
@@ -131,7 +133,7 @@ mod tests {
 
     #[test]
     fn a_plain_placement_is_its_position() {
-        let p = image_placement(&WorldPlacement::at(10.0, 20.0), (0.0, 0.0), (1.0, 1.0));
+        let p = image_placement(&WorldPlacement::at(10.0, 20.0), (0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(p, ImagePlacement { x: 10.0, y: 20.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0 });
     }
 
@@ -140,16 +142,32 @@ mod tests {
         // quarter turn: a pivot offset along x comes out along y
         let w = WorldPlacement { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rotation: 90.0,
                                  a: 0.0, b: 1.0, c: -1.0, d: 0.0 };
-        let p = image_placement(&w, (10.0, 0.0), (1.0, 1.0));
+        let p = image_placement(&w, (10.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
         assert_eq!((p.x, p.y), (0.0, 10.0), "an offset that is rotated must land rotated");
     }
 
     #[test]
     fn a_bitmap_fill_scales_both_the_art_and_its_pivot() {
         let w = WorldPlacement::at(0.0, 0.0);
-        let p = image_placement(&w, (10.0, 4.0), (2.0, 3.0));
+        let p = image_placement(&w, (10.0, 4.0), [2.0, 0.0, 0.0, 3.0]);
         assert_eq!((p.scale_x, p.scale_y), (2.0, 3.0));
         assert_eq!((p.x, p.y), (20.0, 12.0), "the pivot is in fill-scaled pixels");
+    }
+
+    /// A spinning item is a run of shapes each filling one picture at its own angle: the fill's
+    /// turn is the picture's turn, never a squash of its diagonal (a quarter turn read as scale
+    /// `a, d` draws it at nothing, a half turn as a flip).
+    #[test]
+    fn a_turned_bitmap_fill_turns_the_art() {
+        let w = WorldPlacement::at(0.0, 0.0);
+        let (s, c) = (30f64.to_radians().sin(), 30f64.to_radians().cos());
+        for (fill, want) in [([0.0, 1.0, -1.0, 0.0], 90.0), ([c, s, -s, c], 30.0), ([-c, s, -s, -c], 150.0)] {
+            let p = image_placement(&w, (0.0, 0.0), fill);
+            assert_eq!((p.scale_x, p.scale_y, p.rotation), (1.0, 1.0, want), "fill {fill:?}");
+        }
+        // the pivot turns with it: a pivot along x under a quarter-turned fill lands along y
+        let p = image_placement(&w, (10.0, 0.0), [0.0, 1.0, -1.0, 0.0]);
+        assert_eq!((p.x, p.y), (0.0, 10.0));
     }
 
     /// The whole point of turning one picture instead of pre-drawing many: a shape rasterised
@@ -181,7 +199,7 @@ mod tests {
                 let w = WorldPlacement::from_affine(a, b, c, d, tx, ty);
                 // the raster is the shape's own bounds, drawn unrotated at native size, so its
                 // top-left IS the shape's top-left
-                let p = image_placement(&w, (bx0, by0), (1.0, 1.0));
+                let p = image_placement(&w, (bx0, by0), [1.0, 0.0, 0.0, 1.0]);
 
                 for &(u, v) in &[(0.0, 0.0), (bx1 - bx0, 0.0), (0.0, by1 - by0), (bx1 - bx0, by1 - by0)] {
                     // where the source draws this corner

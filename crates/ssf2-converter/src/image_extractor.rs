@@ -211,14 +211,13 @@ pub struct ImageExtractionResult {
     /// computed as (-fill_tx / (fill_a/20), -fill_ty / (fill_d/20)).
     /// Only populated for shapes with a non-trivial fill offset.
     pub shape_pivot: BTreeMap<u16, (f64, f64)>,
-    /// shape_id → (fill_scale_x, fill_scale_y), the bitmap-fill matrix scale
-    /// (signed; negative = flip). SSF2 references a high-res bitmap through a
-    /// DefineShape whose fill matrix scales it (often WAY down, e.g. a shared
-    /// magic-particle bitmap displayed at 0.08×). The PNG is extracted at native
-    /// resolution, so this scale MUST multiply into the IMAGE symbol's scale or
-    /// the sprite renders 1/fill_scale too big. Absent → 1.0 (vector shapes, or
-    /// bitmaps placed 1:1). See entity_gen IMAGE placement.
-    pub shape_fill_scale: BTreeMap<u16, (f64, f64)>,
+    /// shape_id → the bitmap fill's linear part `[a, b, c, d]` (picture pixels to shape units,
+    /// SWF layout). SSF2 references a high-res bitmap through a DefineShape whose fill matrix
+    /// scales it (often WAY down, e.g. a shared magic-particle bitmap displayed at 0.08x), flips
+    /// it, or TURNS it: a spinning item is a run of shapes each filling the same picture at its
+    /// own angle. The PNG is extracted at native resolution, so this MUST compose into the IMAGE
+    /// symbol's transform. Absent → identity (vector shapes, or bitmaps placed 1:1).
+    pub shape_fill_scale: BTreeMap<u16, FillLinear>,
     /// fm_anim_name → per-frame image references
     pub anim_images: BTreeMap<String, AnimFrameImages>,
 }
@@ -338,7 +337,7 @@ pub fn extract_images_from_swf_only(
     //    pivot_x = -fill_tx / (fill_a / 20),  pivot_y = -fill_ty / (fill_d / 20)
     let mut shape_to_bitmap: ShapeToBitmapMap = BTreeMap::new();
     let mut shape_pivot: BTreeMap<u16, (f64, f64)> = BTreeMap::new();
-    let mut shape_fill_scale: BTreeMap<u16, (f64, f64)> = BTreeMap::new();
+    let mut shape_fill_scale: BTreeMap<u16, FillLinear> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineShape(shape) = tag {
             // Look for bitmap fill in fill styles.
@@ -349,24 +348,19 @@ pub fn extract_images_from_swf_only(
                         shape_to_bitmap.insert(shape.id, *id);
                         // fill matrix: a/d are in twips-per-20-pixels, tx/ty in twips/20.
                         // scale_x = a/20 (pixels per shape-unit); pivot_x = -tx / scale_x
-                        let fa = matrix.a.to_f64();
-                        let fd = matrix.d.to_f64();
+                        let l = [matrix.a.to_f64() / 20.0, matrix.b.to_f64() / 20.0,
+                                 matrix.c.to_f64() / 20.0, matrix.d.to_f64() / 20.0];
                         let ftx = matrix.tx.get() as f64 / 20.0;
                         let fty = matrix.ty.get() as f64 / 20.0;
-                        let scale_x = fa / 20.0;
-                        let scale_y = fd / 20.0;
-                        if scale_x.abs() > 0.001 && scale_y.abs() > 0.001 {
-                            // Store the fill scale so the IMAGE placement can fold it in
-                            // (the PNG is at native res; this is how much SSF2 shrinks it).
-                            shape_fill_scale.insert(shape.id, (scale_x, scale_y));
-                            // fill matrix: shape_pt = fill_matrix * bitmap_pt
-                            // So: bitmap_pt = inv(fill_matrix) * shape_pt
-                            // For shape (0,0): bitmap_pt = (-tx/a, -ty/d) in pixel space
-                            // But we want the OPPOSITE: offset FROM bitmap origin TO shape origin
-                            // bitmap origin (0,0) → shape coords via fill matrix: (tx, ty)
-                            // In pixels: (tx/(a/20), ty/(d/20)) = (tx*20/a, ty*20/d)
-                            let px = ftx / scale_x;  // no negation
-                            let py = fty / scale_y;
+                        let det = l[0] * l[3] - l[1] * l[2];
+                        if det.abs() > 1e-6 {
+                            // Store the fill so the IMAGE placement can fold it in (the PNG is at
+                            // native res; this is how SSF2 scales, flips and turns it).
+                            shape_fill_scale.insert(shape.id, l);
+                            // the pivot is the shape's origin in the picture's own pixels, the
+                            // fill's offset carried back through its linear part: L⁻¹·t
+                            let px = (l[3] * ftx - l[2] * fty) / det;
+                            let py = (-l[1] * ftx + l[0] * fty) / det;
                             if px.abs() > 0.5 || py.abs() > 0.5 {
                                 shape_pivot.insert(shape.id, (px, py));
                             }
@@ -2134,12 +2128,23 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
 
 /// A bitmap shape's picture where the shape is placed: the fill's offset (in the picture's
 /// pixels) and its scale, under the placement, as the character path places one
-fn with_fill(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>, fill: Option<&(f64, f64)>) -> ImageLocalMatrix {
-    let (fx, fy) = fill.copied().unwrap_or((1.0, 1.0));
-    let (px, py) = pivot.copied().unwrap_or((0.0, 0.0));
-    let (ox, oy) = (px * fx, py * fy);
-    ImageLocalMatrix { alpha: mat.alpha, ..ImageLocalMatrix::from_abcd(mat.a * fx, mat.b * fx, mat.c * fy, mat.d * fy,
-        mat.tx + ox * mat.a + oy * mat.c, mat.ty + ox * mat.b + oy * mat.d) }
+fn with_fill(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>, fill: Option<&FillLinear>) -> ImageLocalMatrix {
+    let [a, b, c, d, tx, ty] = compose_fill([mat.a, mat.b, mat.c, mat.d, mat.tx, mat.ty], pivot.copied(), fill.copied());
+    ImageLocalMatrix { alpha: mat.alpha, ..ImageLocalMatrix::from_abcd(a, b, c, d, tx, ty) }
+}
+
+/// A bitmap fill's linear part, `[a, b, c, d]` in SWF layout (see `shape_fill_scale`).
+pub type FillLinear = [f64; 4];
+
+/// A placement `m` (`[a, b, c, d, tx, ty]`, SWF layout) carried through a shape's bitmap fill:
+/// the picture's pixel (u, v) lands at `m·(L·((u, v) + pivot))`, so the result maps picture
+/// pixels straight to where `m` draws.
+pub fn compose_fill(m: [f64; 6], pivot: Option<(f64, f64)>, fill: Option<FillLinear>) -> [f64; 6] {
+    let [la, lb, lc, ld] = fill.unwrap_or([1.0, 0.0, 0.0, 1.0]);
+    let (px, py) = pivot.unwrap_or((0.0, 0.0));
+    let [a, b, c, d, tx, ty] = m;
+    let (ox, oy) = (la * px + lc * py, lb * px + ld * py);
+    [a * la + c * lb, b * la + d * lb, a * lc + c * ld, b * lc + d * ld, tx + a * ox + c * oy, ty + b * ox + d * oy]
 }
 
 /// A part placed inside an animation's clip, where the root places that clip: the two matrices
