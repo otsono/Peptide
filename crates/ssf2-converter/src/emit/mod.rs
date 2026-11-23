@@ -656,6 +656,23 @@ pub(crate) fn entity_animations(path: &std::path::Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// a projectile a shared package's item says it fires (`projectiles` in the item's declaration),
+/// by its name or the clip it is drawn as: its name there and its declaration
+fn shared_shot(runtime: &Runtime, key: &str) -> Option<(String, Value)> {
+    // (every shared package's items' shots, read once)
+    static SHOTS: std::sync::OnceLock<Vec<(String, Value)>> = std::sync::OnceLock::new();
+    let cid = crate::projectile_gen::projectile_content_id;
+    let all = SHOTS.get_or_init(|| crate::shared_packages::packages().iter().filter_map(|pkg| {
+        let (m, _) = runtime.read_package(&pkg.swf).ok()?;
+        Some(m.main_class()?.methods.iter()
+            .filter_map(|meth| match crate::model::declare::returned(&meth.function.body) { Some(Value::Arr(list)) => Some(list), _ => None })
+            .flatten()
+            .flat_map(|d| d.get("projectiles").map(|v| v.entries().to_vec()).unwrap_or_default())
+            .collect::<Vec<_>>())
+    }).flatten().collect());
+    all.iter().find(|(n, d)| cid(n) == cid(key) || d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(key))).cloned()
+}
+
 /// The items a fighter's code makes by name without carrying them, as the game's shared packages
 /// declare them: a package's main class returns its items as declarations, each naming the clip
 /// its code makes it by (`linkage_id`) and the class that runs it (`classAPI`). Each package that
@@ -798,6 +815,11 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                         m.classes.values().filter_map(|c| c.methods.iter().find(|x| x.name == "getProjectileStats" && !x.is_static))
                             .filter_map(|x| crate::model::declare::returned(&x.function.body))
                             .find_map(|v| v.entries().iter().find(|(n, d)| matches(n, d)).cloned()).map(|(n, d)| (fighter, n, d))
+                            // (one its fighters declare as an item, which this fighter fires as its own
+                            // projectile: pac-man's fruit kirby copies; its stats are the item's)
+                            .or_else(|| fs.iter().find_map(|f| f.items.entries().iter().find(|(n, d)| matches(n, d)).cloned()).map(|(n, d)| (fighter, n, d)))
+                            // (one a shared package's item says it fires: a star rod's star)
+                            .or_else(|| shared_shot(runtime, &entity_key).map(|(n, d)| (fighter, n, d)))
                     };
                     let found = found.or(shot);
                     let (decls, title, stats, class, clip) = match (&found, enemy) {
@@ -829,11 +851,14 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                 let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
                 let has = entity_animations(&entity);
                 let pieces: Vec<Piece> = pieces.into_iter().filter(|p| has.contains(&p.fm_name)).collect();
+                // (one a shared package's item says it fires, the star a star rod fires: that declaration)
+                let lent = shared_shot(runtime, &entity_key);
+                if let Some((_, d)) = &lent { declare_in_stats(char_dir, &entity_key, d)?; }
                 let spec = ObjectSpec { effects, entities, class: "PeptideProjectile".into(),
-                    clip: entity_key.clone(), clip_sym: Some(sym), stats: Value::Null };
+                    clip: entity_key.clone(), clip_sym: Some(sym), stats: lent.as_ref().map(|(_, d)| d.clone()).unwrap_or(Value::Null) };
                 let (text, mut gaps) = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key, &entity_key, owner, false)
                     .map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
-                gaps.push("declared by nothing it carries: its stats are the engine's defaults".into());
+                if lent.is_none() { gaps.push("declared by nothing it carries: its stats are the engine's defaults".into()); }
                 std::fs::write(&script, &text)?;
                 unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
                 out.push((entity_key, gaps));
