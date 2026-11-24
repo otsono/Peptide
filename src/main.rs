@@ -5584,6 +5584,12 @@ fn connect_edit(
             eprintln!("inject_animation_guard: skipped ({e})");
         }
     }
+    // Smooth motion is opt-in: off, the patch is byte for byte what it was.
+    if std::env::var("PEPTIDE_SMOOTH_MOTION").map(|v| v == "1").unwrap_or(false) {
+        if let Err(e) = inject_smooth_motion(code, g_turbo, n as usize) {
+            eprintln!("inject_smooth_motion: skipped ({e})");
+        }
+    }
     // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
     // (AGENT_CONTEXT.md): the ONLY thing that must be in bytecode is pulling the one fact
     // `error.log` lacks — the resource id that was null. inject_stage_diag emits that id
@@ -5958,6 +5964,444 @@ fn insert_ops_end(f: &mut hlbc::types::Function, ops: Vec<Opcode>) {
             }
         }
     }
+}
+
+/// Smooth motion: draw every object between its last two ticks, so a display faster than the
+/// tick rate shows movement on every refresh. Opt-in (`PEPTIDE_SMOOTH_MOTION=1` at patch time,
+/// which `peptide session --smooth` and the launch screen's checkbox set).
+///
+/// The match is untouched: a tick writes each object's place onto the screen as it always did,
+/// and the frames drawn in between move the on-screen copy only, which is put back before the
+/// next tick reads anything. What it costs is one tick of display latency, since a frame shows a
+/// point between the previous tick and the latest one.
+///
+/// The loop only draws faster than the tick rate once a match has been running for
+/// `LIVE_TICKS`; launch, loading and menus keep the engine's own pacing. Peptide's own work in
+/// the loop keeps its one-per-tick cadence throughout.
+///
+/// What is not blended: a move further than `SMOOTH_SNAP` in one tick (a respawn, a camera cut),
+/// an object that was not placed on the tick before, and anything while `speed` is above 1.
+/// Every placed object carries `__smPx/__smCx` (previous and latest x), `__smShownX` (where it
+/// was last drawn) and `__smRatio`, readable from `e`, which is how a test sees the blend.
+/// The engine-side detail is in docs/ENGINE_INTERNALS.local.md.
+fn inject_smooth_motion(code: &mut Bytecode, g_turbo: usize, dispatch_len: usize) -> anyhow::Result<()> {
+    use crate::asm::Asm;
+    use hlbc::types::{ObjField, RefField, RefFloat, RefFun, RefGlobal, RefInt, RefString, RefType};
+    const SMOOTH_SNAP: f64 = 200.0;      // px in one tick, past which a move is a jump
+    const SMOOTH_SNAP_SCALE: f64 = 0.25; // the same for the camera's zoom
+    const LOOP_RATE: f64 = 240.0;        // the cap on drawn frames a second (vsync still applies)
+    const LIVE_TICKS: i32 = 120;         // ticks a match has to have run before the loop speeds up
+    let (t_void, t_i32, t_f64, t_bool) = (0usize, 3usize, 6usize, 7usize);
+
+    let view_t = require_type(code, "pxf.components.View")?;
+    if code.types.iter().any(|t| t.get_type_obj().and_then(|o| o.super_).map(|s| s.0) == Some(view_t)) {
+        anyhow::bail!("the view class has subclasses; its fields cannot be extended safely");
+    }
+    let (view_body_f, body_t) = field_and_type(code, "pxf.components.View", "body")?;
+    let (view_root_f, root_t) = field_and_type(code, "pxf.components.View", "rootContainer")?;
+    let body_x_f = require_field(code, "pxf.components.Body", "x")?;
+    let body_y_f = require_field(code, "pxf.components.Body", "y")?;
+    let dobj_t = require_type(code, "pxf.display.DisplayObject")?;
+    let (dobj_inner_f, inner_t) = field_and_type(code, "pxf.display.DisplayObject", "_displayObject")?;
+    let dobj = Some("pxf.display.DisplayObject");
+    let (get_x, get_y, set_x, set_y) = (require_fn(code, "get_x", dobj)?, require_fn(code, "get_y", dobj)?,
+        require_fn(code, "set_x", dobj)?, require_fn(code, "set_y", dobj)?);
+    let (get_sx, get_sy, set_sx, set_sy) = (require_fn(code, "get_scaleX", dobj)?, require_fn(code, "get_scaleY", dobj)?,
+        require_fn(code, "set_scaleX", dobj)?, require_fn(code, "set_scaleY", dobj)?);
+    let get_parent = require_fn(code, "get_parent", dobj)?;
+    let mc_g = find_statics_global(code, "pxf.controllers.$MatchController")
+        .ok_or_else(|| anyhow::anyhow!("match controller statics not found"))?;
+    let mc_t = require_type(code, "pxf.controllers.$MatchController")?;
+    let (cm_f, match_t) = field_and_type(code, "pxf.controllers.$MatchController", "currentMatch")?;
+    let (cam_f, cam_t) = field_and_type(code, "pxf.core.Match", "camera")?;
+    let (cam_world_f, world_t) = field_and_type(code, "pxf.core.camera.GameCamera", "STAGE")?;
+    let core_g = find_statics_global(code, "pxf.core.$CoreEngine")
+        .ok_or_else(|| anyhow::anyhow!("core engine statics not found"))?;
+    let core_t = require_type(code, "pxf.core.$CoreEngine")?;
+    let (proc_f, proc_t) = field_and_type(code, "pxf.core.$CoreEngine", "process")?;
+    let accu_ratio = require_fn(code, "getFixedUpdateAccuRatio", Some("dn.Process"))?;
+    let sys_g = find_statics_global(code, "hxd.$System")
+        .ok_or_else(|| anyhow::anyhow!("system statics not found"))?;
+    let sys_t = require_type(code, "hxd.$System")?;
+    let rate_f = require_field(code, "hxd.$System", "desiredFrameRate")?;
+    let view_update = require_fn(code, "update", Some("pxf.components.View"))?;
+    let tick_fn = require_fn(code, "fixedUpdate", Some("pxf.core.CoreProcess"))?;
+    let main_update = require_fn(code, "update", Some("fraymakers.Main"))?;
+
+    // what each view remembers: the tick it was last placed on, the next view placed on that
+    // tick, and where it stood on that tick and the one before
+    let names = ["__smTick", "__smNext", "__smPx", "__smPy", "__smCx", "__smCy", "__smShownX", "__smRatio"];
+    let types = [t_i32, view_t, t_f64, t_f64, t_f64, t_f64, t_f64, t_f64];
+    let name_ix: Vec<usize> = names.iter().map(|n| add_string(code, n)).collect();
+    let obj = code.types[view_t].get_type_obj_mut().ok_or_else(|| anyhow::anyhow!("view is not a class"))?;
+    let base = obj.fields.len();
+    for (n, t) in name_ix.iter().zip(types) {
+        let f = ObjField { name: RefString(*n), t: RefType(t) };
+        obj.own_fields.push(f.clone());
+        obj.fields.push(f);
+    }
+    let (f_tick, f_next, f_px, f_py, f_cx, f_cy) =
+        (RefField(base), RefField(base + 1), RefField(base + 2), RefField(base + 3), RefField(base + 4), RefField(base + 5));
+    // where the view was last drawn and how far between the ticks that was, kept so a probe
+    // can see a place between two ticks
+    let (f_shown, f_ratio) = (RefField(base + 6), RefField(base + 7));
+
+    let global = |code: &mut Bytecode, t: usize| { code.globals.push(RefType(t)); RefGlobal(code.globals.len() - 1) };
+    let g_pass = global(code, t_i32);       // main-loop passes so far
+    let g_tick = global(code, t_i32);       // the pass the latest tick ran in
+    let g_prev_tick = global(code, t_i32);  // the pass the tick before it ran in
+    let g_head = global(code, view_t);      // views placed on the latest tick
+    let g_dirty = global(code, t_i32);      // the screen holds blended places
+    let g_cam = global(code, dobj_t);       // what the camera moves
+    let g_cam_tick = global(code, t_i32);
+    let g_cam_dirty = global(code, t_i32);
+    let g_live = global(code, t_i32);       // ticks in a row the same camera has been up
+    let g_rate0 = global(code, t_f64);      // the loop cap the engine set for itself
+    let g_cp: Vec<RefGlobal> = (0..4).map(|_| global(code, t_f64)).collect(); // x y scaleX scaleY, tick before
+    let g_cc: Vec<RefGlobal> = (0..4).map(|_| global(code, t_f64)).collect(); // the same, latest tick
+    let g_turbo = RefGlobal(g_turbo);
+
+    let float = |code: &mut Bytecode, v: f64| {
+        let i = code.floats.iter().position(|x| x.to_bits() == v.to_bits()).unwrap_or_else(|| { code.floats.push(v); code.floats.len() - 1 });
+        RefFloat(i)
+    };
+    let (k_zero, k_one, k_snap, k_nsnap) = (float(code, 0.0), float(code, 1.0), float(code, SMOOTH_SNAP), float(code, -SMOOTH_SNAP));
+    let (k_ssnap, k_nssnap, k_rate) = (float(code, SMOOTH_SNAP_SCALE), float(code, -SMOOTH_SNAP_SCALE), float(code, LOOP_RATE));
+    let (i_zero, i_one) = (RefInt(add_int(code, 0)), RefInt(add_int(code, 1)));
+    let i_stall = RefInt(add_int(code, 30));
+    let i_settled = RefInt(add_int(code, LIVE_TICKS));
+    let cam_get = [get_x, get_y, get_sx, get_sy];
+    let cam_set = [set_x, set_y, set_sx, set_sy];
+    let cam_snap = [(k_snap, k_nsnap), (k_snap, k_nsnap), (k_ssnap, k_nssnap), (k_ssnap, k_nssnap)];
+    let fun = |code: &Bytecode, fx: usize| function_index_by_findex(code, fx).ok_or_else(|| anyhow::anyhow!("function @{fx} not found"));
+
+    // ---- a tick starts: the views placed from here on are this tick's ----
+    {
+        let fi = fun(code, tick_fn)?;
+        let f = &mut code.functions[fi];
+        let mut a = Asm::new(f.regs.len() as u32);
+        let (p, t, v) = (a.reg(t_i32), a.reg(t_i32), a.reg(view_t));
+        let same = a.label();
+        a.op(Opcode::GetGlobal { dst: p, global: g_pass });
+        a.op(Opcode::GetGlobal { dst: t, global: g_tick });
+        a.jeq(p, t, same);
+        a.op(Opcode::SetGlobal { global: g_prev_tick, src: t });
+        a.op(Opcode::SetGlobal { global: g_tick, src: p });
+        a.op(Opcode::Null { dst: v });
+        a.op(Opcode::SetGlobal { global: g_head, src: v });
+        a.place(same);
+        let (ops, regs) = a.finish();
+        add_regs(f, &regs);
+        insert_ops_front(f, ops);
+    }
+
+    // ---- a view is placed: remember where, and where it stood on the tick before ----
+    {
+        let fi = fun(code, view_update)?;
+        let f = &mut code.functions[fi];
+        let mut a = Asm::new(f.regs.len() as u32);
+        let (p, t, st) = (a.reg(t_i32), a.reg(t_i32), a.reg(t_i32));
+        let (b, bx, by, tmp, nx) = (a.reg(body_t), a.reg(t_f64), a.reg(t_f64), a.reg(t_f64), a.reg(view_t));
+        let (end, seen, fresh, rolled) = (a.label(), a.label(), a.label(), a.label());
+        a.op(Opcode::GetGlobal { dst: p, global: g_pass });
+        a.op(Opcode::GetGlobal { dst: t, global: g_tick });
+        a.jnoteq(p, t, end);                                   // placed outside a tick: not ours
+        a.op(Opcode::Field { dst: b, obj: Reg(0), field: RefField(view_body_f) });
+        a.jnull(b, end);
+        a.op(Opcode::Field { dst: bx, obj: b, field: RefField(body_x_f) });
+        a.op(Opcode::Field { dst: by, obj: b, field: RefField(body_y_f) });
+        a.op(Opcode::Field { dst: st, obj: Reg(0), field: f_tick });
+        a.jeq(st, p, seen);                                    // placed again on the same tick
+        a.op(Opcode::GetGlobal { dst: t, global: g_prev_tick });
+        a.jnoteq(st, t, fresh);                                // not placed on the tick before
+        a.op(Opcode::Field { dst: tmp, obj: Reg(0), field: f_cx });
+        a.op(Opcode::SetField { obj: Reg(0), field: f_px, src: tmp });
+        a.op(Opcode::Field { dst: tmp, obj: Reg(0), field: f_cy });
+        a.op(Opcode::SetField { obj: Reg(0), field: f_py, src: tmp });
+        a.jalways(rolled);
+        a.place(fresh);
+        a.op(Opcode::SetField { obj: Reg(0), field: f_px, src: bx });
+        a.op(Opcode::SetField { obj: Reg(0), field: f_py, src: by });
+        a.place(rolled);
+        a.op(Opcode::SetField { obj: Reg(0), field: f_tick, src: p });
+        a.op(Opcode::GetGlobal { dst: nx, global: g_head });
+        a.op(Opcode::SetField { obj: Reg(0), field: f_next, src: nx });
+        a.op(Opcode::SetGlobal { global: g_head, src: Reg(0) });
+        a.place(seen);
+        a.op(Opcode::SetField { obj: Reg(0), field: f_cx, src: bx });
+        a.op(Opcode::SetField { obj: Reg(0), field: f_cy, src: by });
+        a.place(end);
+        let (ops, regs) = a.finish();
+        add_regs(f, &regs);
+        insert_ops_front(f, ops);
+    }
+
+    // The walk over the latest tick's views, shared by the blend and by putting them back: each
+    // view that moved a blendable distance has its container set to `at(previous, delta)`.
+    let walk = |a: &mut Asm, blend: Option<Reg>| {
+        let (v, st, t) = (a.reg(view_t), a.reg(t_i32), a.reg(t_i32));
+        let (rc, inner) = (a.reg(root_t), a.reg(inner_t));
+        let (px, py, dx, dy, k, ret) = (a.reg(t_f64), a.reg(t_f64), a.reg(t_f64), a.reg(t_f64), a.reg(t_f64), a.reg(t_f64));
+        let (top, next, done, moved) = (a.label(), a.label(), a.label(), a.label());
+        a.op(Opcode::GetGlobal { dst: t, global: g_tick });
+        a.op(Opcode::GetGlobal { dst: v, global: g_head });
+        a.place_loop(top);
+        a.jnull(v, done);
+        a.op(Opcode::Field { dst: st, obj: v, field: f_tick });
+        a.jnoteq(st, t, next);
+        a.op(Opcode::Field { dst: rc, obj: v, field: RefField(view_root_f) });
+        a.jnull(rc, next);
+        a.op(Opcode::Field { dst: inner, obj: rc, field: RefField(dobj_inner_f) });
+        a.jnull(inner, next);
+        a.op(Opcode::Field { dst: px, obj: v, field: f_px });
+        a.op(Opcode::Field { dst: py, obj: v, field: f_py });
+        a.op(Opcode::Field { dst: dx, obj: v, field: f_cx });
+        a.op(Opcode::Field { dst: dy, obj: v, field: f_cy });
+        a.op(Opcode::Sub { dst: dx, a: dx, b: px });
+        a.op(Opcode::Sub { dst: dy, a: dy, b: py });
+        a.op(Opcode::Float { dst: k, ptr: k_zero });
+        a.jnoteq(dx, k, moved);
+        a.jeq(dy, k, next);                                    // stood still
+        a.place(moved);
+        a.op(Opcode::Float { dst: k, ptr: k_snap });
+        a.jslt(k, dx, next);
+        a.jslt(k, dy, next);
+        a.op(Opcode::Float { dst: k, ptr: k_nsnap });
+        a.jslt(dx, k, next);
+        a.jslt(dy, k, next);
+        if let Some(r) = blend {                               // else: back to the tick's own place
+            a.op(Opcode::Mul { dst: dx, a: dx, b: r });
+            a.op(Opcode::Mul { dst: dy, a: dy, b: r });
+        }
+        a.op(Opcode::Add { dst: px, a: px, b: dx });
+        a.op(Opcode::Add { dst: py, a: py, b: dy });
+        if let Some(r) = blend {
+            a.op(Opcode::SetField { obj: v, field: f_shown, src: px });
+            a.op(Opcode::SetField { obj: v, field: f_ratio, src: r });
+        }
+        a.op(Opcode::Call2 { dst: ret, fun: RefFun(set_x), arg0: rc, arg1: px });
+        a.op(Opcode::Call2 { dst: ret, fun: RefFun(set_y), arg0: rc, arg1: py });
+        a.place(next);
+        a.op(Opcode::Field { dst: v, obj: v, field: f_next });
+        a.jalways(top);
+        a.place(done);
+    };
+    // The camera's four values, set to previous + (latest - previous) * r, or to the latest.
+    let camera = |a: &mut Asm, blend: Option<Reg>| {
+        let (cam, inner) = (a.reg(dobj_t), a.reg(inner_t));
+        let (p, d, k, ret) = (a.reg(t_f64), a.reg(t_f64), a.reg(t_f64), a.reg(t_f64));
+        let done = a.label();
+        a.op(Opcode::GetGlobal { dst: cam, global: g_cam });
+        a.jnull(cam, done);
+        a.op(Opcode::Field { dst: inner, obj: cam, field: RefField(dobj_inner_f) });
+        a.jnull(inner, done);
+        if blend.is_some() {
+            // a jump on any of the four leaves the camera where the tick put it
+            for i in 0..4 {
+                a.op(Opcode::GetGlobal { dst: p, global: g_cp[i] });
+                a.op(Opcode::GetGlobal { dst: d, global: g_cc[i] });
+                a.op(Opcode::Sub { dst: d, a: d, b: p });
+                a.op(Opcode::Float { dst: k, ptr: cam_snap[i].0 });
+                a.jslt(k, d, done);
+                a.op(Opcode::Float { dst: k, ptr: cam_snap[i].1 });
+                a.jslt(d, k, done);
+            }
+        }
+        for i in 0..4 {
+            a.op(Opcode::GetGlobal { dst: d, global: g_cc[i] });
+            if let Some(r) = blend {
+                a.op(Opcode::GetGlobal { dst: p, global: g_cp[i] });
+                a.op(Opcode::Sub { dst: d, a: d, b: p });
+                a.op(Opcode::Mul { dst: d, a: d, b: r });
+                a.op(Opcode::Add { dst: d, a: p, b: d });
+            }
+            a.op(Opcode::Call2 { dst: ret, fun: RefFun(cam_set[i]), arg0: cam, arg1: d });
+        }
+        if blend.is_some() {
+            let one = a.reg(t_i32);
+            a.op(Opcode::Int { dst: one, ptr: i_one });
+            a.op(Opcode::SetGlobal { global: g_cam_dirty, src: one });
+        }
+        a.place(done);
+    };
+
+    let test_novsync = if std::env::var("PEPTIDE_SMOOTH_TEST_NOVSYNC").map(|v| v == "1").unwrap_or(false) {
+        Some((require_fn(code, "set_vsync", Some("pxf.display.$Window"))?, RefInt(add_int(code, 63))))
+    } else {
+        None
+    };
+    let fi = fun(code, main_update)?;
+    // ---- after the pass's ticks: note the camera, then draw between the two ticks ----
+    {
+        let f = &mut code.functions[fi];
+        let mut a = Asm::new(f.regs.len() as u32);
+        let (p, t, n, one) = (a.reg(t_i32), a.reg(t_i32), a.reg(t_i32), a.reg(t_i32));
+        let (mc, m, cam, world, par, inner, old) =
+            (a.reg(mc_t), a.reg(match_t), a.reg(cam_t), a.reg(world_t), a.reg(dobj_t), a.reg(inner_t), a.reg(dobj_t));
+        let (val, r, k) = (a.reg(t_f64), a.reg(t_f64), a.reg(t_f64));
+        let (core, proc) = (a.reg(core_t), a.reg(proc_t));
+        let (cam_done, no_cam, same_cam, end, r_low, r_ok) = (a.label(), a.label(), a.label(), a.label(), a.label(), a.label());
+        a.op(Opcode::GetGlobal { dst: p, global: g_pass });
+        a.op(Opcode::GetGlobal { dst: t, global: g_tick });
+        a.jnoteq(p, t, cam_done);                              // no tick this pass: nothing new
+        a.op(Opcode::GetGlobal { dst: mc, global: RefGlobal(mc_g) });
+        a.op(Opcode::Field { dst: m, obj: mc, field: RefField(cm_f) });
+        a.jnull(m, no_cam);
+        a.op(Opcode::Field { dst: cam, obj: m, field: RefField(cam_f) });
+        a.jnull(cam, no_cam);
+        a.op(Opcode::Field { dst: world, obj: cam, field: RefField(cam_world_f) });
+        a.jnull(world, no_cam);
+        a.op(Opcode::Field { dst: inner, obj: world, field: RefField(dobj_inner_f) });
+        a.jnull(inner, no_cam);
+        a.op(Opcode::Call1 { dst: par, fun: RefFun(get_parent), arg0: world });
+        a.jnull(par, no_cam);
+        a.op(Opcode::Field { dst: inner, obj: par, field: RefField(dobj_inner_f) });
+        a.jnull(inner, no_cam);
+        a.op(Opcode::GetGlobal { dst: old, global: g_cam });
+        a.op(Opcode::GetGlobal { dst: n, global: g_cam_tick });
+        a.op(Opcode::GetGlobal { dst: one, global: g_prev_tick });
+        // the tick before saw this same camera: its values become the previous ones
+        let fresh_cam = a.label();
+        a.jnoteq(old, par, fresh_cam);
+        a.jnoteq(n, one, fresh_cam);
+        for i in 0..4 {
+            a.op(Opcode::GetGlobal { dst: val, global: g_cc[i] });
+            a.op(Opcode::SetGlobal { global: g_cp[i], src: val });
+            a.op(Opcode::Call1 { dst: val, fun: RefFun(cam_get[i]), arg0: par });
+            a.op(Opcode::SetGlobal { global: g_cc[i], src: val });
+        }
+        a.op(Opcode::GetGlobal { dst: n, global: g_live });
+        a.op(Opcode::Incr { dst: n });
+        a.op(Opcode::SetGlobal { global: g_live, src: n });
+        a.jalways(same_cam);
+        a.place(fresh_cam);
+        a.op(Opcode::Int { dst: n, ptr: i_zero });
+        a.op(Opcode::SetGlobal { global: g_live, src: n });
+        for i in 0..4 {
+            a.op(Opcode::Call1 { dst: val, fun: RefFun(cam_get[i]), arg0: par });
+            a.op(Opcode::SetGlobal { global: g_cp[i], src: val });
+            a.op(Opcode::SetGlobal { global: g_cc[i], src: val });
+        }
+        a.place(same_cam);
+        a.op(Opcode::SetGlobal { global: g_cam, src: par });
+        a.op(Opcode::SetGlobal { global: g_cam_tick, src: p });
+        a.jalways(cam_done);
+        a.place(no_cam);
+        a.op(Opcode::Null { dst: old });
+        a.op(Opcode::SetGlobal { global: g_cam, src: old });
+        a.op(Opcode::Int { dst: n, ptr: i_zero });
+        a.op(Opcode::SetGlobal { global: g_live, src: n });
+        a.place(cam_done);
+        // several ticks to a pass (`speed`) is a test running fast: nothing to smooth
+        a.op(Opcode::GetGlobal { dst: n, global: g_turbo });
+        a.op(Opcode::Int { dst: one, ptr: i_one });
+        a.jslt(one, n, end);
+        a.op(Opcode::GetGlobal { dst: core, global: RefGlobal(core_g) });
+        a.op(Opcode::Field { dst: proc, obj: core, field: RefField(proc_f) });
+        a.jnull(proc, end);
+        // how far the clock is from the latest tick toward the next, 0 to 1
+        a.op(Opcode::Call1 { dst: r, fun: RefFun(accu_ratio), arg0: proc });
+        a.op(Opcode::Float { dst: k, ptr: k_zero });
+        a.jslt(r, k, r_low);
+        a.op(Opcode::Float { dst: k, ptr: k_one });
+        a.jslt(r, k, r_ok);
+        a.place(r_low);
+        a.op(Opcode::Mov { dst: r, src: k });
+        a.place(r_ok);
+        walk(&mut a, Some(r));
+        a.op(Opcode::SetGlobal { global: g_dirty, src: one });
+        // the camera only when the latest tick is the one that noted it
+        let no_blend_cam = a.label();
+        a.op(Opcode::GetGlobal { dst: n, global: g_cam_tick });
+        a.op(Opcode::GetGlobal { dst: t, global: g_tick });
+        a.jnoteq(n, t, no_blend_cam);
+        camera(&mut a, Some(r));
+        a.place(no_blend_cam);
+        a.place(end);
+        let (ops, regs) = a.finish();
+        add_regs(f, &regs);
+        insert_ops_end(f, ops);
+    }
+    // ---- before anything else in a pass: count it, and put every blended place back ----
+    {
+        let f = &mut code.functions[fi];
+        let mut a = Asm::new(f.regs.len() as u32);
+        let (p, d, zero) = (a.reg(t_i32), a.reg(t_i32), a.reg(t_i32));
+        let (sys, rate) = (a.reg(sys_t), a.reg(t_f64));
+        let (clean, cam_clean) = (a.label(), a.label());
+        a.op(Opcode::GetGlobal { dst: p, global: g_pass });
+        a.op(Opcode::Incr { dst: p });
+        a.op(Opcode::SetGlobal { global: g_pass, src: p });
+        // The loop draws faster than the tick rate only while a match is up and settled: the
+        // engine's own launch, loading and menus keep the pacing they were written for (a launch
+        // at the faster rate takes the engine down), and get it back the moment the match ends.
+        {
+            let (cur, fast, live, need, ct, tk) = (a.reg(t_f64), a.reg(t_f64), a.reg(t_i32), a.reg(t_i32), a.reg(t_i32), a.reg(t_i32));
+            let (is_fast, slow, set) = (a.label(), a.label(), a.label());
+            a.op(Opcode::GetGlobal { dst: sys, global: RefGlobal(sys_g) });
+            a.op(Opcode::Field { dst: cur, obj: sys, field: RefField(rate_f) });
+            a.op(Opcode::Float { dst: fast, ptr: k_rate });
+            a.jeq(cur, fast, is_fast);
+            a.op(Opcode::SetGlobal { global: g_rate0, src: cur });   // the engine's own value
+            a.place(is_fast);
+            a.op(Opcode::GetGlobal { dst: live, global: g_live });
+            a.op(Opcode::Int { dst: need, ptr: i_settled });
+            a.jslt(live, need, slow);
+            a.op(Opcode::GetGlobal { dst: ct, global: g_cam_tick });
+            a.op(Opcode::GetGlobal { dst: tk, global: g_tick });
+            a.jnoteq(ct, tk, slow);
+            a.op(Opcode::Mov { dst: rate, src: fast });
+            a.jalways(set);
+            a.place(slow);
+            a.op(Opcode::GetGlobal { dst: rate, global: g_rate0 });
+            a.place(set);
+            a.op(Opcode::SetField { obj: sys, field: RefField(rate_f), src: rate });
+        }
+        // PEPTIDE_SMOOTH_TEST_NOVSYNC=1 keeps vsync off, which is how a display no faster than
+        // the tick rate still gets frames between ticks to check the blend on
+        if let Some((set_vsync, mask)) = test_novsync {
+            let (m, z, off, ret) = (a.reg(t_i32), a.reg(t_i32), a.reg(t_bool), a.reg(t_bool));
+            let skip = a.label();
+            a.op(Opcode::Int { dst: m, ptr: mask });
+            a.op(Opcode::And { dst: m, a: p, b: m });
+            a.op(Opcode::Int { dst: z, ptr: i_zero });
+            a.jnoteq(m, z, skip);
+            a.op(Opcode::Bool { dst: off, value: hlbc::types::ValBool(false) });
+            a.op(Opcode::Call1 { dst: ret, fun: RefFun(set_vsync), arg0: off });
+            a.place(skip);
+        }
+        a.op(Opcode::Int { dst: zero, ptr: i_zero });
+        a.op(Opcode::GetGlobal { dst: d, global: g_dirty });
+        a.jeq(d, zero, clean);
+        a.op(Opcode::SetGlobal { global: g_dirty, src: zero });
+        walk(&mut a, None);
+        a.place(clean);
+        a.op(Opcode::GetGlobal { dst: d, global: g_cam_dirty });
+        a.jeq(d, zero, cam_clean);
+        a.op(Opcode::SetGlobal { global: g_cam_dirty, src: zero });
+        camera(&mut a, None);
+        a.place(cam_clean);
+        // Peptide's own work in this function was written for one pass to a tick, and it keeps
+        // that cadence: it runs on the pass after a tick, and on every pass while none are
+        // running (boot, or a stall), and is stepped over on the passes drawn in between.
+        let (tk, gap, k) = (a.reg(t_i32), a.reg(t_i32), a.reg(t_i32));
+        let run = a.label();
+        a.op(Opcode::GetGlobal { dst: tk, global: g_tick });
+        a.jeq(tk, zero, run);
+        a.op(Opcode::Sub { dst: gap, a: p, b: tk });
+        a.op(Opcode::Int { dst: k, ptr: i_one });
+        a.jeq(gap, k, run);
+        a.op(Opcode::Int { dst: k, ptr: i_stall });
+        a.jslt(k, gap, run);
+        a.op(Opcode::JAlways { offset: dispatch_len as i32 });
+        a.place(run);
+        let (ops, regs) = a.finish();
+        add_regs(f, &regs);
+        insert_ops_front(f, ops);
+    }
+    let _ = (t_void, t_bool);
+    eprintln!("connect_edit: smooth motion on (views + camera drawn between ticks, loop up to {LOOP_RATE} fps)");
+    Ok(())
 }
 
 /// Prepend a per-frame input override to the TOP of `Character.updateGameInput`.

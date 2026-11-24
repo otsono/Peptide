@@ -74,6 +74,9 @@ impl Asm {
     pub fn jslt(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JSLt { a, b, offset: 0 }); }
     pub fn jeq(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JEq { a, b, offset: 0 }); }
     pub fn jtrue(&mut self, cond: Reg, l: Label) { self.branch(l, Opcode::JTrue { cond, offset: 0 }); }
+    pub fn jnoteq(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JNotEq { a, b, offset: 0 }); }
+    /// Point `l` at a `Label` op emitted here: the form a BACKWARD jump has to land on.
+    pub fn place_loop(&mut self, l: Label) { self.place(l); self.ops.push(Opcode::Label); }
 
     /// Resolve all label jumps to relative offsets and return `(ops, reg_types)`.
     /// `reg_types` go straight to `add_regs(f, &reg_types)`. Panics on an unplaced label.

@@ -651,6 +651,10 @@
           <input type="checkbox" id="opt-engine-logging" checked onchange="setEngineLogging(this.checked)">
           <span>Surface script errors in-game <span class="hint">(shows trapped hscript errors via the engine console)</span></span>
         </label>
+        <label class="launch-opt" title="Draws every object between its last two ticks, so a display faster than 60 Hz shows motion on every refresh. The match itself is unchanged; it is shown one tick late. Only while a match is running.">
+          <input type="checkbox" id="opt-smooth-motion" onchange="setSmoothMotion(this.checked)">
+          <span>Smooth motion <span class="hint">(for displays faster than 60 Hz; shows the match one tick late)</span></span>
+        </label>
         <div class="m-actions-row">
           <button class="btn-primary" onclick="launchFrayDefault()" title="Boot straight into a match with the engine's default fighter on the default stage — nothing to pick or publish">Quick match (default fighter)</button>
           <button class="btn-ghost" onclick="launchBrowse()">Browse…</button>
@@ -959,7 +963,12 @@
   // so trapped script errors hit the engine console. Sent on change AND before each boot so
   // the patcher (spawned next) reads the right env value.
   function setEngineLogging(on){ ipcSend("@@opt:enginelogging:" + (on ? "1" : "0")); }
-  function syncEngineLogging(){ var c=$("#opt-engine-logging"); if(c) setEngineLogging(c.checked); }
+  // Smooth motion (off by default): the same route, read by the patcher at the next boot.
+  function setSmoothMotion(on){ ipcSend("@@opt:smoothmotion:" + (on ? "1" : "0")); }
+  function syncEngineLogging(){
+    var c=$("#opt-engine-logging"); if(c) setEngineLogging(c.checked);
+    var m=$("#opt-smooth-motion"); if(m) setSmoothMotion(m.checked);
+  }
 
   // Boot Fraymakers with NO character selected → a normal (non-headless) boot, not
   // a fast-boot. No auto-spawn; the user drives it from the console.

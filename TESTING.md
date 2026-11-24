@@ -294,6 +294,15 @@ reading the same control file and stealing each other's commands. `peptide sessi
 drives the pair already running and launches nothing, which is what you want when a session is
 up and you only need to send it commands. `peptide ssf2 session` behaves the same way.
 
+**smooth motion.** `peptide session --smooth` (or the launch screen's "Smooth motion" checkbox)
+patches the engine to draw every object between its last two ticks, so a display faster than
+60 Hz shows motion on every refresh. it is off by default. the match is unchanged and stays at
+60 ticks a second; what you see is one tick late. the loop only draws faster once a match has
+been running for two seconds, and nothing is blended while `speed` is above 1. to check it on a
+60 Hz display, launch with `PEPTIDE_SMOOTH_TEST_NOVSYNC=1` (keeps vsync off so frames land
+between ticks) and read a fighter's `view.__smPx`, `view.__smCx`, `view.__smShownX` and
+`view.__smRatio` with `e`: the drawn x sits between the previous and latest x.
+
 **is it actually animating?** ask per OBJECT, never per pixel. a whole-frame diff cannot answer
 it: parallax, the fighters and the hud move whatever the backdrop does, so a frozen element hides
 inside a frame that "changed". take a few `tree` dumps and run `tools/anim-advanced.py`, which

@@ -334,6 +334,14 @@ pub fn launch() -> std::io::Result<()> {
                 } else {
                     std::env::remove_var("PEPTIDE_ENGINE_LOGGING");
                 }
+            } else if let Some(v) = b.strip_prefix("@@opt:smoothmotion:") {
+                // "Smooth motion" checkbox: off unless ticked, read by the patcher the next
+                // boot spawns (PEPTIDE_SMOOTH_MOTION), the same way as the option above.
+                if v.trim() == "1" {
+                    std::env::set_var("PEPTIDE_SMOOTH_MOTION", "1");
+                } else {
+                    std::env::remove_var("PEPTIDE_SMOOTH_MOTION");
+                }
             } else if b.starts_with("@@") {
                 handle_screen_verb(b, &ipc_proxy);
             } else {

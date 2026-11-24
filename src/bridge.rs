@@ -664,6 +664,8 @@ pub fn session(args: &[String]) {
 \x20 --full            boot to the title with the bridge only (no baked match)\n\
 \x20 --no-boot         launch nothing; wait for an engine to dial in on --port\n\
 \x20 --versus          force versus mode for 1-2 players\n\
+\x20 --smooth          draw motion between ticks on displays faster than 60 Hz (off by default;\n\
+\x20                   shows the match one tick late)\n\
 \x20 --dir <path>      session directory (default ~/.peptide/session)\n\n\
 A session and the game it drives are ONE pairing: starting another replaces it,\n\
 so you never end up with two engines fighting over the same control file.\n\n\
@@ -722,6 +724,8 @@ Drive it with `peptide tell \"<cmd>\"`, watch it with `peptide log`.");
         let (r, w) = crate::ui::await_engine(port, token.as_deref());
         (r, w, port, token.unwrap_or_default(), None)
     } else {
+        // read by the patcher this launch spawns; a session without the flag patches as before
+        if args.iter().any(|a| a == "--smooth") { std::env::set_var("PEPTIDE_SMOOTH_MOTION", "1"); }
         let full = args.iter().any(|a| a == "--full");
         // `--char` may carry a comma-separated roster (e.g. `mario,mario`) so the auto-boot builds
         // a multi-player match directly; the patcher bakes player 1 (first token) and is told the
