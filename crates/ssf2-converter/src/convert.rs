@@ -34,6 +34,11 @@ pub struct ConvertOptions {
     /// Character-name override. For a multi-character `.ssf`, selects only that
     /// character. Auto-detected from the SWF when `None`.
     pub name: Option<String>,
+    /// What to file the fighter's project under, for a run that converts one fighter. `None`
+    /// works it out (`identity`).
+    pub id: Option<String>,
+    /// What the fighter goes by. `None` is the name the fighter declares.
+    pub display_name: Option<String>,
     /// Explicit `misc.ssf` for costume palettes. Auto-detected next to the input
     /// when `None`.
     pub misc_ssf: Option<PathBuf>,
@@ -53,6 +58,8 @@ impl ConvertOptions {
             input: input.into(),
             output: PathBuf::from("./characters"),
             name: None,
+            id: None,
+            display_name: None,
             misc_ssf: None,
             game: None,
             per_character_projects: false,
@@ -218,6 +225,26 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
         }).collect()
     };
 
+    // what each fighter is filed under and shown as (`identity`): its declared name, and its
+    // package's id unless the game's roster shows it to be a fighter built into another's slot
+    let declared_names: std::collections::BTreeMap<String, String> = crate::model::SourceModel::read(&ssf_data).ok()
+        .map(|m| char_names.iter().filter_map(|c| {
+            let f = m.fighters().into_iter().find(|f| f.stats.get("statsName").and_then(|v| v.str()).is_some_and(|n| n.eq_ignore_ascii_case(c))
+                || f.getter.to_lowercase() == format!("get{}", c.to_lowercase()))?;
+            Some((c.clone(), f.stats.get("displayName")?.str()?.to_string()))
+        }).collect()).unwrap_or_default();
+    if (opts.id.is_some() || opts.display_name.is_some()) && char_names.len() != 1 {
+        anyhow::bail!("an id or a display name is one fighter's: this run converts {} (pick one with --name)", char_names.join(", "));
+    }
+    let identities: Vec<crate::identity::Identity> = char_names.iter().map(|c| {
+        let folder = c.to_lowercase().replace(' ', "");
+        let mut ident = crate::identity::decide(&folder, declared_names.get(c).map(String::as_str), &crate::shared_packages::roster_name);
+        if let Some(id) = &opts.id { ident.id = crate::identity::check_id(id)?; }
+        if let Some(n) = &opts.display_name { ident.name = n.clone(); }
+        if ident.id != folder { log::info!("{c} is filed under {:?} ({:?})", ident.id, ident.name); }
+        Ok(ident)
+    }).collect::<Result<_>>()?;
+
     let mut accumulated_logs: Vec<serde_json::Value> = Vec::new();
     let mut accumulated_manifest_chars: Vec<ManifestCharEntry> = Vec::new();
     let mut all_warnings: Vec<String> = Vec::new();
@@ -236,15 +263,43 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
                 char_ids: char_names.clone(),
             })
         } else { None };
+        // a fighter filed under another id than its package's is made aside, with identities of
+        // its own, and moved into place under that id once it is whole
+        let ident = &identities[slot_idx];
+        let folder = char_name.to_lowercase().replace(' ', "");
+        let aside = (slot.is_none() && ident.id != folder).then(|| opts.output.join(format!(".{}.converting", ident.id)));
+        if let Some(a) = &aside { let _ = fs::remove_dir_all(a); }
+        let _own_ns = aside.as_ref().map(|_| crate::uuid_gen::ProjectNsGuard::install(&ident.id));
         match process_character(
-            &parsed_swf, &swf, char_name, &opts.output, costumes_path.as_deref(),
+            &parsed_swf, &swf, char_name, aside.as_deref().unwrap_or(&opts.output), costumes_path.as_deref(),
             &opts.input, slot.as_ref(), &mut all_warnings,
         ) {
-            Ok(Some(artifacts)) => {
+            Ok(Some(mut artifacts)) => {
+                // the declared name, where no other fighter of the project declares the same
+                // (a second form states the name of the fighter it is a form of)
+                let key = crate::identity::reduce(&ident.name);
+                if identities.iter().filter(|i| crate::identity::reduce(&i.name) == key).count() == 1 {
+                    artifacts.manifest_entry.display_name = ident.name.clone();
+                }
                 accumulated_manifest_chars.push(artifacts.manifest_entry);
                 accumulated_logs.push(artifacts.log_block);
             }
-            Ok(None) => { /* single-character; finalized inside process_character */ }
+            Ok(None) => {
+                let home = opts.output.join(&ident.id);
+                let placed = (|| -> Result<()> {
+                    if let Some(a) = &aside {
+                        let made = a.join(&folder);
+                        crate::identity::rename_project(&made, &folder, &ident.id)?;
+                        crate::identity::install(&made, &home)?;
+                        let _ = fs::remove_dir_all(a);
+                    }
+                    crate::identity::set_name(&home, &ident.id, &ident.name)
+                })();
+                if let Err(e) = placed {
+                    log::error!("naming {char_name}'s project: {e}");
+                    all_warnings.push(format!("naming {char_name}'s project: {e}"));
+                }
+            }
             Err(e) => {
                 log::error!("Failed to process {}: {}", char_name, e);
                 all_warnings.push(format!("failed to process {char_name}: {e}"));
@@ -309,7 +364,7 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     let lint_dirs: Vec<PathBuf> = if multi_char_mode {
         vec![project_dir.clone()]
     } else {
-        char_names.iter().map(|c| opts.output.join(c)).collect()
+        identities.iter().map(|i| opts.output.join(&i.id)).collect()
     };
     for dir in &lint_dirs {
         match prune_unplaced_sprites(dir) {
@@ -328,11 +383,13 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     }
 
     // Collect the .fraytools files produced (for the UI's "open / publish" step).
-    let fraytools_files = collect_fraytools_files(&project_dir, multi_char_mode, &char_names, &opts.output);
+    // in a project of its own a fighter is known by what it is filed under
+    let filed: Vec<String> = if multi_char_mode { char_names } else { identities.into_iter().map(|i| i.id).collect() };
+    let fraytools_files = collect_fraytools_files(&project_dir, multi_char_mode, &filed, &opts.output);
 
     Ok(ConversionSummary {
         project_dir,
-        characters: char_names,
+        characters: filed,
         multi_char: multi_char_mode,
         project_id,
         fraytools_files,

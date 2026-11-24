@@ -866,6 +866,8 @@ fn run_convert(json: &str, proxy: &EventLoopProxy<Ev>) {
     opts.output = json_str_field(json, "output").filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from).unwrap_or_else(|| cfg.output_dir());
     opts.name = json_str_field(json, "name").filter(|s| !s.is_empty());
+    opts.id = json_str_field(json, "id").filter(|s| !s.is_empty());
+    opts.display_name = json_str_field(json, "displayName").filter(|s| !s.is_empty());
     opts.misc_ssf = json_str_field(json, "miscSsf").filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| if cfg.misc_ssf.is_empty() { None } else { Some(std::path::PathBuf::from(&cfg.misc_ssf)) });

@@ -139,6 +139,18 @@ pub fn all_data_packages() -> Vec<(String, Vec<u8>)> {
     }).collect()
 }
 
+/// What the game's own roster calls a fighter id, when the game is at hand and lists it.
+pub fn roster_name(id: &str) -> Option<String> {
+    static ROSTER: OnceLock<std::collections::BTreeMap<String, String>> = OnceLock::new();
+    ROSTER.get_or_init(|| {
+        let Some(dir) = data_dir() else { return Default::default() };
+        let Some(swf) = game_swf(&dir) else { return Default::default() };
+        let Ok(inv) = crate::ssf2_manifest::read(&swf, &dir) else { return Default::default() };
+        inv.character.into_iter().filter(|(_, e)| !e.name.is_empty())
+            .map(|(id, e)| (id.to_lowercase(), e.name)).collect()
+    }).get(&id.to_lowercase()).cloned()
+}
+
 /// Every package the manifest declares as loaded alongside, decompressed once.
 pub fn packages() -> &'static [SharedPackage] {
     static PKGS: OnceLock<Vec<SharedPackage>> = OnceLock::new();

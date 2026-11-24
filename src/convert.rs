@@ -71,6 +71,8 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut name: Option<String> = None;
+    let mut id: Option<String> = None;
+    let mut display_name: Option<String> = None;
     let mut misc_ssf: Option<PathBuf> = None;
     let mut game: Option<PathBuf> = None;
     let mut per_character_projects = false;
@@ -82,6 +84,8 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
         match args[i].as_str() {
             "-o" | "--output" => { output = args.get(i + 1).map(PathBuf::from); i += 2; }
             "-n" | "--name" => { name = args.get(i + 1).cloned(); i += 2; }
+            "--id" => { id = args.get(i + 1).cloned(); i += 2; }
+            "--display-name" => { display_name = args.get(i + 1).cloned(); i += 2; }
             "--misc-ssf" => { misc_ssf = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--game" => { game = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--per-character-projects" => { per_character_projects = true; i += 1; }
@@ -121,6 +125,8 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let mut opts = ConvertOptions::new(input);
     if let Some(o) = output { opts.output = o; }
     opts.name = name;
+    opts.id = id;
+    opts.display_name = display_name;
     opts.misc_ssf = misc_ssf;
     opts.game = game.or_else(|| crate::config::Config::load().ssf2_app());
     opts.per_character_projects = per_character_projects;
@@ -171,6 +177,11 @@ OPTIONS:
   -n, --name <NAME>           which fighter to convert, for a package that
                               declares several (matched ignoring case and
                               spaces; converts every declared one otherwise)
+      --id <ID>               what to file the project under [default: the
+                              package's id, or the fighter's own name as an id
+                              when it is built into another fighter's slot]
+      --display-name <NAME>   what the fighter goes by [default: the name it
+                              declares]
       --misc-ssf <FILE>       misc.ssf for costume palettes (auto-detected next
                               to the input file otherwise)
       --game <PATH>           the installed SSF2 (app or data folder): its shared

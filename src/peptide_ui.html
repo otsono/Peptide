@@ -507,6 +507,13 @@
         <input id="c-name" placeholder="auto-detect" />
       </div>
       <div class="field">
+        <label>Name and id <span class="hint" style="font-weight:400">(optional; what the fighter goes by and what its project is filed under)</span></label>
+        <div class="inrow">
+          <input id="c-display" placeholder="the name it declares" />
+          <input id="c-id" placeholder="auto" />
+        </div>
+      </div>
+      <div class="field">
         <label>misc.ssf <span class="hint" style="font-weight:400">(optional; auto-detected next to the SSF2 file)</span></label>
         <div class="inrow">
           <input id="c-misc" placeholder="auto-detect (…/misc.ssf)" />
@@ -1414,6 +1421,7 @@
     $("c-result").innerHTML = "";
     const payload = JSON.stringify({
       input, output: $("c-output").value.trim(), name: $("c-name").value.trim(),
+      id: $("c-id").value.trim(), displayName: $("c-display").value.trim(),
       miscSsf: $("c-misc").value.trim(),
       game: $("c-game").value.trim(),
     });

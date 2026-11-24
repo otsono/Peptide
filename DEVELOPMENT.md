@@ -235,6 +235,10 @@ Options:
   -o, --output <DIR>     Output directory            [default: ./characters]
   -n, --name <NAME>      Character-name override. For a multi-character .ssf,
                          selects only that character. Auto-detected if omitted.
+      --id <ID>          What to file the project under. Defaults to the package's id,
+                         or the fighter's own name as an id when it is built into
+                         another fighter's slot.
+      --display-name <NAME>  What the fighter goes by. Defaults to the name it declares.
       --misc-ssf <FILE>  Path to misc.ssf for costume palettes.
                          Auto-detected next to the input file if omitted.
       --game <PATH>      The installed SSF2 (app or data folder): its shared packages
@@ -826,7 +830,12 @@ installs the `EffectAnimGuard` (effect → primary-animation map), counts the po
 placeholder), and runs the stat-scaling wrappers (`ssf2_gravity_to_fm`, …) that route every
 value through `stats.jsonc :: multipliers`. it emits the three character stats files via
 `generate_hitbox_stats` / `generate_character_stats` / `generate_animation_stats`; `Script.hx`
-is `emit::fighter`'s. `generate_manifest` writes `library/manifest.json`; the
+is `emit::fighter`'s. `generate_manifest` writes `library/manifest.json`. `identity.rs` then settles what the
+project is called and filed under: the name is the fighter's declared `displayName`, and the id
+is the package's own unless the game's roster lists that id under a different name (a mod built
+into another fighter's slot), in which case the project is made aside and filed under the
+fighter's name as an id, with its own guids, so it installs beside the fighter it borrowed from.
+without the installed game at hand the declared id stands; `--id` and `--display-name` override. the
 `generate_projectile_*` fns pull real values from `getProjectileStats()` data via
 `best_match_projectile_data`. `generate_sound_entries` writes per-WAV `.meta` sidecars, and
 `script_meta` emits the `.hx.meta` sidecar variants.
