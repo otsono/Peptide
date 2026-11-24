@@ -876,6 +876,12 @@ fn run_convert(json: &str, proxy: &EventLoopProxy<Ev>) {
     opts.game = json_str_field(json, "game").filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from).or_else(|| cfg.ssf2_app());
 
+    if let Err(e) = crate::convert::refuse_output_in_game(&opts.output) {
+        let _ = proxy.send_event(Ev::Js(format!(
+            "window.onConvertError && onConvertError({})", js_str(&e.to_string()))));
+        return;
+    }
+
     let _ = proxy.send_event(Ev::Js(format!(
         "window.onConvertProgress && onConvertProgress({})",
         js_str(&format!("Converting {}…", input)))));

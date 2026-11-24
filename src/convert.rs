@@ -66,6 +66,38 @@ pub fn init_logger(verbose: bool) {
     });
 }
 
+/// A conversion writes a FrayTools PROJECT, which the game cannot load: it reads only a built
+/// package sitting directly in `custom/<name>/`. A project written into that folder shows up in
+/// the game as content that holds nothing, so an output folder inside it is refused, with where
+/// the built package goes instead.
+pub fn refuse_output_in_game(output: &std::path::Path) -> anyhow::Result<()> {
+    let Some(root) = crate::config::Config::load().fraymakers_root() else { return Ok(()) };
+    output_outside_custom(output, &root.join("custom"))
+}
+
+fn output_outside_custom(output: &std::path::Path, custom: &std::path::Path) -> anyhow::Result<()> {
+    // compared as they resolve, as far as each exists (the output folder often does not yet)
+    let real = |p: &std::path::Path| -> PathBuf {
+        let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        let mut tail = Vec::new();
+        let mut at = abs.as_path();
+        loop {
+            if let Ok(c) = std::fs::canonicalize(at) { return tail.iter().rev().fold(c, |d, n| d.join(n)); }
+            match (at.parent(), at.file_name()) {
+                (Some(up), Some(name)) => { tail.push(name.to_os_string()); at = up; }
+                _ => return abs,
+            }
+        }
+    };
+    if real(output).starts_with(real(custom)) {
+        anyhow::bail!("{} is inside the game's custom folder. a conversion writes a FrayTools project, \
+            which the game cannot load from there (it would list it as content that holds nothing). \
+            convert into a projects folder outside the game, then publish: that builds the package \
+            and puts it in the game's custom folder itself", output.display());
+    }
+    Ok(())
+}
+
 /// Parse `convert` args (everything after the `convert` word) and run a conversion.
 pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let mut input: Option<PathBuf> = None;
@@ -130,6 +162,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     opts.misc_ssf = misc_ssf;
     opts.game = game.or_else(|| crate::config::Config::load().ssf2_app());
     opts.per_character_projects = per_character_projects;
+    refuse_output_in_game(&opts.output)?;
 
     let summary = run_conversion(opts)?;
 
@@ -199,4 +232,22 @@ Output for character <id> lands in <output>/<id>/ (single-character) or
 <output>/<project_id>/ (a unified multi-character project).
 "
     .to_string()
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::output_outside_custom;
+
+    #[test]
+    fn an_output_inside_the_games_custom_folder_is_refused() {
+        let game = std::env::temp_dir().join(format!("peptide-out-{}", std::process::id()));
+        let custom = game.join("custom");
+        std::fs::create_dir_all(&custom).unwrap();
+        assert!(output_outside_custom(&custom, &custom).is_err());
+        assert!(output_outside_custom(&custom.join("KFM"), &custom).is_err());
+        assert!(output_outside_custom(&custom.join("..").join("custom").join("KFM"), &custom).is_err());
+        assert!(output_outside_custom(&game.join("projects"), &custom).is_ok());
+        assert!(output_outside_custom(&game.join("customs"), &custom).is_ok());
+        let _ = std::fs::remove_dir_all(&game);
+    }
 }
