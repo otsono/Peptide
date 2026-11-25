@@ -715,17 +715,86 @@ fn costume_source_near(dir: &Path) -> Option<PathBuf> {
         .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ssf")))
         .collect();
     files.sort();
-    let found = files.into_iter().find(|p| {
-        let Ok(raw) = fs::read(p) else { return false };
-        let Ok(swf_data) = ssf::decompress(&raw) else { return false };
-        let Ok(swf) = swf_parser::parse(&swf_data) else { return false };
-        swf.abc_blocks.iter().filter_map(|b| abc_parser::parse(b).ok()).any(|abc| {
-            abc_parser::scan_all_costume_methods(&abc).iter()
-                .any(|(k, v)| k != "unknown" && v.len() >= 10)
-        })
-    })?;
+    // the archive holding the most costumes is the table: a fighter with one costume is a fighter
+    // with costumes, so no count is too few, and a file with a stray palette of its own is not
+    // mistaken for the table that holds everyone's
+    let found = files.into_iter().filter_map(|p| {
+        let raw = fs::read(&p).ok()?;
+        let swf_data = ssf::decompress(&raw).ok()?;
+        let swf = swf_parser::parse(&swf_data).ok()?;
+        let n: usize = swf.abc_blocks.iter().filter_map(|b| abc_parser::parse(b).ok())
+            .map(|abc| abc_parser::scan_all_costume_methods(&abc).iter()
+                .filter(|(k, _)| k.as_str() != "unknown").map(|(_, v)| v.len()).sum::<usize>())
+            .sum();
+        (n > 0).then_some((n, p))
+    }).max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1))).map(|(_, p)| p)?;
     let _ = fs::write(&memo, found.display().to_string());
     Some(found)
+}
+
+/// Every fighter gets every team costume the table has. The teams are the ones the table itself
+/// names, in the order it first names them; a fighter whose entry leaves one out wears its default
+/// costume tinted that team's colour, placed after the team costumes it does have (first, with none).
+fn fill_team_costumes(all: &mut std::collections::BTreeMap<String, Vec<abc_parser::CostumeData>>) {
+    let mut teams: Vec<String> = Vec::new();
+    for c in all.values().flatten().filter(|c| c.team) {
+        if !teams.contains(&c.name) { teams.push(c.name.clone()) }
+    }
+    let tints = team_tints(all, &teams);
+    for costumes in all.values_mut() {
+        let Some(first) = costumes.first() else { continue };
+        // what the fighter wears by default: its default costume, or its art's own colours
+        let (colors, worn) = match costumes.iter().find(|c| c.name == "Default") {
+            Some(d) => (d.colors.clone(), d.replacements.clone()),
+            None => (first.colors.clone(), first.colors.clone()),
+        };
+        let mut end = costumes.iter().rposition(|c| c.team).map_or(0, |i| i + 1);
+        for (team, &(hue, sat)) in teams.iter().zip(&tints) {
+            if costumes.iter().any(|c| c.team && &c.name == team) { continue }
+            let replacements = worn.iter().map(|&c| crate::palette_gen::tint(c, hue, sat)).collect();
+            costumes.insert(end, abc_parser::CostumeData { name: team.clone(), colors: colors.clone(), replacements, team: true });
+            end += 1;
+        }
+    }
+}
+
+/// Each team's colour (hue in degrees, saturation), read off the table: the hues that team's
+/// costumes carry and the other teams' costumes do not. Skin, metal and the like are worn by
+/// every team alike and cancel out.
+fn team_tints(all: &std::collections::BTreeMap<String, Vec<abc_parser::CostumeData>>, teams: &[String]) -> Vec<(f32, f32)> {
+    const BINS: usize = 36;
+    // per team, per hue bin: how much colour sits there, and how saturated it is
+    let mut weight = vec![[0f32; BINS]; teams.len()];
+    let mut sat = vec![[0f32; BINS]; teams.len()];
+    for c in all.values().flatten().filter(|c| c.team) {
+        let Some(t) = teams.iter().position(|n| n == &c.name) else { continue };
+        for &argb in &c.replacements {
+            let (h, s, v) = crate::palette_gen::hsv(argb);
+            let bin = ((h / 360.0 * BINS as f32) as usize).min(BINS - 1);
+            weight[t][bin] += s * v;
+            sat[t][bin] += s * s * v;
+        }
+    }
+    (0..teams.len()).map(|t| {
+        let total: f32 = weight[t].iter().sum();
+        let (mut x, mut y, mut w, mut s) = (0f32, 0f32, 0f32, 0f32);
+        for bin in 0..BINS {
+            // the other teams' share of this hue, taken off this team's
+            let others = (0..teams.len()).filter(|&o| o != t).map(|o| {
+                let ot: f32 = weight[o].iter().sum();
+                if ot > 0.0 { weight[o][bin] / ot } else { 0.0 }
+            }).fold(0f32, f32::max);
+            let own = if total > 0.0 { weight[t][bin] / total } else { 0.0 };
+            let extra = (own - others).max(0.0);
+            let angle = ((bin as f32 + 0.5) / BINS as f32) * std::f32::consts::TAU;
+            x += angle.cos() * extra;
+            y += angle.sin() * extra;
+            w += extra;
+            if weight[t][bin] > 0.0 { s += extra * sat[t][bin] / weight[t][bin] }
+        }
+        if w <= 0.0 { return (0.0, 0.0) }
+        ((y.atan2(x).to_degrees() + 360.0) % 360.0, s / w)
+    }).collect()
 }
 
 fn extract_costumes_to_temp(misc_ssf: &Path) -> Result<PathBuf> {
@@ -744,14 +813,16 @@ fn extract_costumes_to_temp(misc_ssf: &Path) -> Result<PathBuf> {
         }
     }
 
-    // Drop noise: unknown key, or fewer than 10 costumes
-    all_costumes.retain(|k, v| k != "unknown" && v.len() >= 10);
+    // only a fighter with no costume at all has none: one costume is a costume
+    all_costumes.retain(|k, v| k != "unknown" && !v.is_empty());
+    fill_team_costumes(&mut all_costumes);
 
     let json_val: serde_json::Value = all_costumes.iter().map(|(char_name, costumes)| {
         let arr: serde_json::Value = costumes.iter().map(|c| serde_json::json!({
             "name":         c.name,
             "colors":       c.colors,
             "replacements": c.replacements,
+            "team":         c.team,
         })).collect::<Vec<_>>().into();
         (char_name.clone(), arr)
     }).collect::<serde_json::Map<_, _>>().into();
@@ -1801,6 +1872,42 @@ fn write_conversion_log(
         serde_json::to_string_pretty(&payload)? + "\n",
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod team_costume_tests {
+    use super::*;
+    use crate::abc_parser::CostumeData;
+
+    fn c(name: &str, team: bool, to: u32) -> CostumeData {
+        CostumeData { name: name.into(), colors: vec![1, 2, 3, 4], replacements: vec![to; 4], team }
+    }
+
+    #[test]
+    fn a_fighter_missing_a_team_costume_wears_its_default_tinted_that_teams_colour() {
+        // every team costume shares a skin tone; red and green differ in the cloth
+        let (skin, red, green, grey): (u32, u32, u32, u32) = (0xFFE0A070, 0xFFE02020, 0xFF20C030, 0xFF808080);
+        let team = |name: &str, cloth: u32| CostumeData { name: name.into(), colors: vec![1, 2], replacements: vec![skin, cloth], team: true };
+        let mut all = std::collections::BTreeMap::new();
+        all.insert("full".to_string(), vec![team("Red", red), team("Green", green), c("Default", false, 9), c("Alt 1", false, 12)]);
+        all.insert("short".to_string(), vec![team("Green", green), c("Default", false, grey), c("Alt 1", false, 22)]);
+        all.insert("one".to_string(), vec![c("Default", false, 0xFF3050D0)]);
+        fill_team_costumes(&mut all);
+        let names = |k: &str| all[k].iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names("full"), ["Red", "Green", "Default", "Alt 1"]);
+        assert_eq!(names("short"), ["Green", "Red", "Default", "Alt 1"]);
+        assert_eq!(names("one"), ["Red", "Green", "Default"]);
+        // the stand-in is the fighter's default pulled to the team's colour, not the shared skin's
+        let worn = |k: &str, t: &str| all[k].iter().find(|c| c.team && c.name == t).unwrap().replacements[0];
+        let r = |c: u32| ((c >> 16) & 255, (c >> 8) & 255, c & 255);
+        let (rr, rg, rb) = (r)(worn("one", "Red"));
+        assert!(rr > rg + 40 && rr > rb + 40, "red stand-in {:06x}", worn("one", "Red"));
+        let (gr, gg, gb) = (r)(worn("one", "Green"));
+        assert!(gg > gr + 40 && gg > gb + 40, "green stand-in {:06x}", worn("one", "Green"));
+        // a grey default takes the tint too, and keeps its brightness
+        let (sr, sg, _) = (r)(worn("short", "Red"));
+        assert!(sr > sg && sr >= 0x78);
+    }
 }
 
 #[cfg(test)]

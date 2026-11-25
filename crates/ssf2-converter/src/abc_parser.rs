@@ -254,6 +254,9 @@ pub struct CostumeData {
     pub colors: Vec<u32>,
     /// Replacement ARGB color values — what each source color becomes for this costume
     pub replacements: Vec<u32>,
+    /// the entry says which team wears it (the costume's name is that team's)
+    #[serde(default)]
+    pub team: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4756,6 +4759,7 @@ impl AbcVisitor for CostumeVisitor {
             if colors.len() >= 4 && colors.len() == replacements.len() {
                 let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
                 let alt_n = self.alt_counters.entry(char_key.clone()).or_insert(0);
+                let team = !obj.contains_key("base") && matches!(obj.get("team"), Some(StackVal::Str(_)));
                 let costume_name = if obj.contains_key("base") {
                     "Default".to_string()
                 } else if let Some(StackVal::Str(team)) = obj.get("team") {
@@ -4770,7 +4774,7 @@ impl AbcVisitor for CostumeVisitor {
                     format!("Alt {}", alt_n)
                 };
                 self.per_char.entry(char_key).or_default()
-                    .push(CostumeData { name: costume_name, colors, replacements });
+                    .push(CostumeData { name: costume_name, colors, replacements, team });
             }
         }
         // Pattern B — character-file style.
@@ -4783,7 +4787,7 @@ impl AbcVisitor for CostumeVisitor {
             if colors.len() >= 4 {
                 let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
                 self.per_char.entry(char_key).or_default()
-                    .push(CostumeData { name: name.clone(), colors, replacements: vec![] });
+                    .push(CostumeData { name: name.clone(), colors, replacements: vec![], team: false });
             }
         }
         NewObjectAction::PushObj(obj)

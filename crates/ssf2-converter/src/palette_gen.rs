@@ -75,7 +75,8 @@ pub fn load_ssf2_costumes(json_path: &Path, char_name: &str) -> Option<Vec<Ssf2C
         let replacements: Vec<u32> = entry.get("replacements")?.as_array()?
             .iter().filter_map(|c| c.as_u64().map(|n| n as u32)).collect();
         if colors.len() != replacements.len() || colors.is_empty() { return None; }
-        Some(Ssf2Costume { name, colors, replacements })
+        let team = entry.get("team").and_then(|t| t.as_bool()).unwrap_or(false);
+        Some(Ssf2Costume { name, colors, replacements, team })
     }).collect::<Vec<_>>();
 
     if costumes.is_empty() { None } else { Some(costumes) }
@@ -209,6 +210,32 @@ fn kmeans(samples: &[[u8; 3]], k: usize) -> Vec<[u8; 3]> {
     }
     centroids.sort_by_key(|c| (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000);
     centroids
+}
+
+/// hue in degrees, saturation and value of an ARGB colour
+pub(crate) fn hsv(argb: u32) -> (f32, f32, f32) {
+    let (r, g, b) = (((argb >> 16) & 255) as f32 / 255.0, ((argb >> 8) & 255) as f32 / 255.0, (argb & 255) as f32 / 255.0);
+    let max = r.max(g).max(b); let delta = max - r.min(g).min(b);
+    let h = if delta < 0.001 { 0.0 }
+        else if (max - r).abs() < 0.001 { 60.0 * (((g - b) / delta) % 6.0) }
+        else if (max - g).abs() < 0.001 { 60.0 * ((b - r) / delta + 2.0) }
+        else { 60.0 * ((r - g) / delta + 4.0) };
+    ((h % 360.0 + 360.0) % 360.0, if max < 0.001 { 0.0 } else { delta / max }, max)
+}
+
+/// The colour pulled to a tint: the tint's hue, saturation halfway to the tint's, its own
+/// brightness and alpha. Shading survives because brightness does.
+pub(crate) fn tint(argb: u32, hue: f32, sat: f32) -> u32 {
+    let (_, s, v) = hsv(argb);
+    let s = s + (sat - s) * 0.5;
+    let c = v * s;
+    let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = if hue < 60.0 { (c, x, 0.0) } else if hue < 120.0 { (x, c, 0.0) }
+        else if hue < 180.0 { (0.0, c, x) } else if hue < 240.0 { (0.0, x, c) }
+        else if hue < 300.0 { (x, 0.0, c) } else { (c, 0.0, x) };
+    let ch = |f: f32| ((f + m) * 255.0).round() as u32;
+    (argb & 0xFF00_0000) | (ch(r) << 16) | (ch(g) << 8) | ch(b)
 }
 
 fn rotate_hue(rgb: [u8; 3], deg: f32) -> [u8; 3] {
