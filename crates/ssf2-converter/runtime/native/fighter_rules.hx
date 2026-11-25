@@ -19,6 +19,8 @@ var thrownFoe = self.makeObject(null);
 var releasedFoe = self.makeObject(null);
 // who its code has listening for an attack to end (the source's `charAttackComplete`)
 var attackDone = self.makeObject([]);
+// those of them added to be kept: the rest are heard until the fighter is out of its attack
+var attackDoneKept = self.makeObject([]);
 // the last sound and voice it played, for an attack that stops them as it ends
 var lastSound = self.makeObject(null);
 var lastVoice = self.makeObject(null);
@@ -90,6 +92,7 @@ function attackFrame() {
 	if (label == attackIn.get()) return;
 	attackTurning = true;
 	attackEnded();
+	if (label == null) attackDone.set(attackDoneKept.get().copy());
 	attackTurning = false;
 	attackIn.set(label);
 	attackMetaIn.set(label == null ? null : animMeta());

@@ -115,8 +115,9 @@ function NAME(name, on, options) {
 	if (stats == null) return null;
 	if (options.x != null) stats.x = options.x;
 	if (options.y != null) stats.y = options.y;
-	if (options.scaleX != null) stats.scaleX = options.scaleX;
-	if (options.scaleY != null) stats.scaleY = options.scaleY;
+	// (a scale the call asks for is of the art at the size its case draws it)
+	if (options.scaleX != null) stats.scaleX = options.scaleX * (stats.scaleX == null ? 1 : stats.scaleX);
+	if (options.scaleY != null) stats.scaleY = options.scaleY * (stats.scaleY == null ? 1 : stats.scaleY);
 	if (options.layer != null) stats.layer = options.layer;
 	if (options.loop == true) { stats.loop = true; stats.timeout = -1; }
 	if (options.relativeWith == true) { stats.relativeWith = true; stats.resizeWith = true; stats.flipWith = true; }
@@ -551,4 +552,29 @@ function NAME(o, i, r) {
 	var s = {};
 	// {cases}
 	o.updateHitboxStats(i, s);
+}
+
+// ---- own_art
+//: SIZE the world's size over the source's
+// the effects of its own art its code keeps: their art is in the source's units, drawn at the
+// world's size, so a scale its code writes or reads on one is of the art (the engine's own
+// effects are this engine's size, and scale as written)
+var ownArt = self.makeObject([]);
+function NAME(v) {
+	if (v == null) return null;
+	var kept = [];
+	for (e in ownArt.get()) if (!e.isDisposed()) kept.push(e);
+	kept.push(v);
+	ownArt.set(kept);
+	return v;
+}
+function artScale(held, across, s) {
+	if (held == null) return;
+	if (ownArt.get().indexOf(held) >= 0) s = s * SIZE;
+	if (across) held.setScaleX(s); else held.setScaleY(s);
+}
+function artScaleOf(held, across) {
+	if (held == null) return 1;
+	var s = across ? held.getScaleX() : held.getScaleY();
+	return ownArt.get().indexOf(held) >= 0 ? s / SIZE : s;
 }

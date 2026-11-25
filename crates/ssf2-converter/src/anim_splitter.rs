@@ -193,12 +193,17 @@ pub fn split_animations(
                 let turn_f = label_map.get("turn").copied();
 
                 if has_dash {
-                    // Pattern A: run(loop)=first, dash=initial dash, turn=turnaround
+                    // Pattern A: a dash, a run loop and a turn, each from its own label to the next
+                    // one, in whatever order the clip lays them out (mario's runs first, kung fu
+                    // man's dashes first); the run loop is the frames before the first label where
+                    // the clip names none
                     let dash_f = label_map["dash"];
-                    let run_f  = 0u16;
+                    let run_f  = label_map.get("run").copied().unwrap_or(0);
                     let turn_f = turn_f.unwrap_or(total);
-                    push_split(&mut out, "dash",     anim_name, dash_f, turn_f, &labels, false, None);
-                    push_split(&mut out, "run",      anim_name, run_f,  dash_f, &labels, true, Some(0));
+                    let end = |from: u16| ["dash", "run", "turn"].iter().filter_map(|l| label_map.get(l).copied()).filter(|f| *f > from).min().unwrap_or(total);
+                    push_split(&mut out, "dash",     anim_name, dash_f, end(dash_f), &labels, false, None);
+                    let run_end = if label_map.contains_key("run") { end(run_f) } else { dash_f };
+                    push_split(&mut out, "run",      anim_name, run_f,  run_end,     &labels, true, Some(0));
                     push_split(&mut out, "run_turn", anim_name, turn_f, total,  &labels, false, None);
                 } else if let Some(turn_f) = turn_f {
                     // Pattern B: labels are [run_frame_0, run_frame_N, turn]
@@ -799,8 +804,12 @@ pub fn split_animations(
         // its fall
         ("fall_special", "helpless"),
         ("fall_special", "fall_loop"),
-        // Assist call (Fraymakers-specific) — placeholder reuse of a neutral pose.
+        // calling an assist: the source's stance for raising an assist trophy (`item_raise`, what
+        // the items package's trophy plays on its holder), on the ground and in the air alike; a
+        // fighter with none of its own raises nothing and stands
+        ("assist_call",     "item_raise"),
         ("assist_call",     "stand"),
+        ("assist_call_air", "item_raise"),
         ("assist_call_air", "jump_in"),
     ];
     // Slots whose donor must run BACKWARDS (see SplitAnim::reversed).

@@ -521,6 +521,8 @@ struct Writer<'o, 'a> {
     testing: bool,
     /// whether the function being written is a frame script
     in_frame: bool,
+    /// the listener being added says it is kept (`persistent`)
+    listen_kept: bool,
     /// the variables the function being written shares with the closures it makes
     captured: BTreeSet<String>,
     /// what each of them holds, as far as its code says
@@ -568,7 +570,7 @@ struct Writer<'o, 'a> {
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), primed: false, clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), local_src: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false, arming: false };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, listen_kept: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false, arming: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -2306,6 +2308,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 && !self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) && !matches!(o, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Value(Ty::Rect))) => {
                 let (who, wt) = self.expr(o)?;
                 let (val, _) = if f == "visible" { (self.test(v)?, Ty::Bool) } else { self.expr(v)? };
+                // (one that may be an effect it made: its scale is of the art, `artScale`)
+                if matches!(f.as_str(), "scaleX" | "scaleY") && who != "self" && self.o.size != 1.0 && self.may_hold_effect(o) {
+                    self.own_art()?;
+                    return Ok(vec![format!("artScale({who}, {}, {val});", f == "scaleX")]);
+                }
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
                 // (one it holds may be none: a part its animation places none of, an effect never made;
                 // or, held as a value of no known kind, a record of a clip its code made, whose look is
@@ -3109,6 +3116,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 && !self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) && !matches!(&**o, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Value(Ty::Rect))) => {
                 let (v, _) = self.expr(o)?;
                 let get = match n.as_str() { "scaleX" => "getScaleX", "scaleY" => "getScaleY", "alpha" => "getAlpha", _ => "getRotation" };
+                // (one that may be an effect it made: its scale is of the art, `artScaleOf`)
+                if matches!(n.as_str(), "scaleX" | "scaleY") && v != "self" && self.o.size != 1.0 && self.may_hold_effect(o) {
+                    self.own_art()?;
+                    return Ok((format!("artScaleOf({v}, {})", n == "scaleX"), Ty::Num))
+                }
                 (format!("{}.{get}()", paren(&v)), Ty::Num)
             }
             // a record it was handed (the stage's bounds in the source's units, its palette): its fields
@@ -5012,9 +5024,20 @@ impl<'o, 'a> Writer<'o, 'a> {
         let off = |o: &Option<String>| o.as_ref().map(|t| fold(&format!("{} * {size}", paren(t)))).unwrap_or_else(|| "0".into());
         // (an offset of nothing moves nothing)
         let (ox, oy) = (ox.filter(|t| !t.parse::<f64>().is_ok_and(|v| v == 0.0)), oy.filter(|t| !t.parse::<f64>().is_ok_and(|v| v == 0.0)));
+        // (art of its own is in the source's units, as its maker's is: drawn at the size the world
+        // is, by the scale it asks for; the engine's own effects are this engine's size already.
+        // one named as it runs takes the size with its art, `namedEffect`)
+        let own = named.is_none() && !stats.contains("\"global::");
         let mut st = vec![stats];
         if let Some(n) = gone { st.push(format!("timeout: {}", 2 * (n.max(1) - 1))); }
-        for k in ["scaleX", "scaleY"] { if let Some(t) = num(self, k)? { st.push(format!("{k}: {t}")); } }
+        for k in ["scaleX", "scaleY"] {
+            match (num(self, k)?, own) {
+                (Some(t), true) => st.push(format!("{k}: {}", fold(&format!("{} * {size}", paren(&t))))),
+                (Some(t), false) => st.push(format!("{k}: {t}")),
+                (None, true) if self.o.size != 1.0 => st.push(format!("{k}: {size}")),
+                _ => {}
+            }
+        }
         if let Some(l) = &behind { st.push(format!("layer: {l}")); }
         if resized && !locked { st.push("resizeWith: true".into()); }
         if looped { st.retain(|x| !x.starts_with("timeout:")); st.push("loop: true".into()); }
@@ -5058,6 +5081,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             self.inner_clips()?;
             format!("withInners(match.createVfx(new VfxStats({{ {} }}), {on}), {})", st.join(", "), quote(&name))
         } else { format!("match.createVfx(new VfxStats({{ {} }}), {on})", st.join(", ")) };
+        // (one its code keeps, of its own art: noted, for a scale its code gives it later)
+        let make = if !self.top && (own || named.is_some()) && self.o.size != 1.0 { self.own_art()?; format!("ownArtMade({make})") } else { make };
         if after.is_empty() { return Ok((make, Ty::Object)) }
         self.effects += 1;
         let v = if self.effects == 1 { "effect".to_string() } else { format!("effect{}", self.effects) };
@@ -5150,7 +5175,9 @@ impl<'o, 'a> Writer<'o, 'a> {
         for n in self.o.effect_names.clone() {
             let Some((stats, gone)) = (self.o.effect)(&n) else { continue };
             let timeout = gone.map(|g| format!(", timeout: {}", 2 * (g.max(1) - 1))).unwrap_or_default();
-            cases.push(format!("case {}: return new VfxStats({{ {stats}{timeout} }});", quote(&n)));
+            // (its own art at the size the world is, as `effect` draws one named outright)
+            let size = if stats.contains("\"global::") || self.o.size == 1.0 { String::new() } else { format!(", scaleX: {s}, scaleY: {s}", s = number(self.o.size)) };
+            cases.push(format!("case {}: return new VfxStats({{ {stats}{timeout}{size} }});", quote(&n)));
         }
         let mut made = if self.o.effect_inners.is_empty() { "match.createVfx(stats, on)".to_string() } else { self.inner_clips()?; "withInners(match.createVfx(stats, on), name)".to_string() };
         if !self.o.effect_code.is_empty() { self.effect_code_helper()?; made = format!("keepCoded({made}, name)"); }
@@ -5387,7 +5414,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             if let Some(r) = self.fighter_api(m, args) { return r }
         }
         match (m, args) {
-            ("addEventListener" | "removeEventListener", [ev, handler, ..]) => return self.listener(who, m, ev, handler),
+            ("addEventListener" | "removeEventListener", [ev, handler, rest @ ..]) => {
+                self.listen_kept = rest.iter().any(|e| matches!(e, Expr::Object(kv) if kv.iter().any(|(k, v)| matches!(k, Expr::Str(k) if k == "persistent") && matches!(v, Expr::Bool(true)))));
+                return self.listener(who, m, ev, handler)
+            }
             ("addTimer", [frames, repeat, f, rest @ ..]) if mine => return self.timer(frames, repeat, f, rest),
             // (on another object: that object's timer, running its handler a source frame each two of
             // this engine's, as the timers of its own)
@@ -6691,7 +6721,10 @@ self.playFrameLabel({})", quote(f))); }
         if name == "charAttackComplete" && who == "self" && self.o.fighter {
             let h = self.handler(handler)?;
             self.blocks.insert("attack".into());
-            return Ok((if m == "addEventListener" { format!("attackDone.get().remove({h});\nattackDone.get().push({h})") } else { format!("attackDone.get().remove({h})") }, Ty::Any));
+            // (one added without `persistent` is heard until the fighter is out of its attack)
+            let kept = if self.listen_kept { format!(";\nattackDoneKept.get().push({h})") } else { String::new() };
+            let off = format!("attackDone.get().remove({h});\nattackDoneKept.get().remove({h})");
+            return Ok((if m == "addEventListener" { format!("{off};\nattackDone.get().push({h}){kept}") } else { off }, Ty::Any));
         }
         // meeting its owner: told by its own frame check, through a note of whether it listens
         if matches!(name.as_str(), "projCollide" | "projCollideOwner") && who == "self" && !self.o.fighter {
@@ -6887,6 +6920,35 @@ self.playFrameLabel({})", quote(f))); }
             });
         }
         any && only
+    }
+
+    /// whether a value may be an effect its code made: a field or local some write of which makes
+    /// one (kept as it is made, or handed through a call of its own on the way)
+    fn may_hold_effect(&self, e: &Expr) -> bool {
+        let makes = |v: &Expr| {
+            let mut found = false;
+            walk_exprs(&[Stmt::Expr(v.clone())], &mut |x| if matches!(x, Expr::Call(h, _) if matches!(&**h, Expr::Member(_, m) | Expr::Name(m) if matches!(m.as_str(), "createVfx" | "attachEffect" | "lockEffect"))) { found = true });
+            found
+        };
+        let mut any = false;
+        match e {
+            Expr::Local(r) => walk(&self.body, &mut |st| if let Stmt::Assign(Place::Local(x), v) = st { if x == r && makes(v) { any = true } }),
+            Expr::Member(t, f) if matches!(**t, Expr::This) => {
+                let Some(c) = self.o.model.classes.get(&self.class) else { return false };
+                for body in c.methods.iter().map(|m| &m.function.body) {
+                    walk(body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), v) = st { if g == f && makes(v) { any = true } });
+                }
+            }
+            _ => any = makes(e),
+        }
+        any
+    }
+
+    /// the note of the effects of its own art its code keeps (`own_art`)
+    fn own_art(&mut self) -> Result<(), String> {
+        if self.helpers.contains_key("ownArtMade") { return Ok(()) }
+        self.helpers.insert("ownArtMade".into(), helper(self.o.runtime, "helpers", "own_art", "ownArtMade", &[("SIZE", number(self.o.size))], &[])?);
+        Ok(())
     }
 
     /// whether some effect of its places a clip of this name that its code turns
